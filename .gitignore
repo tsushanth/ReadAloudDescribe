@@ -28,6 +28,13 @@ __pycache__/
 *.bin
 models/
 
+# Spike artifacts — corpus images and intermediate result JSONs
+# live outside the repo (in /tmp/moondream_spike/). Don't accept
+# them into the repo by accident.
+corpus/
+corpus_results.json
+corpus_run.log
+
 # Editor / OS
 *.swp
 .vscode/

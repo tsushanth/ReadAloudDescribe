@@ -35,10 +35,12 @@ Considered four candidates before locking the v1 pick:
 
 | Model | INT8 size | RAM | Pixel 6 latency | Pixel 9 latency | Quality vs Gemini Nano | License |
 |---|---|---|---|---|---|---|
-| **Moondream2 (1.86B)** ← v1 | ~1.0 GB | ~2.5 GB | 5-15 s | 2-6 s | Comparable | Apache 2.0 |
-| SmolVLM-500M | ~250 MB | ~800 MB | 1-3 s | < 1 s | Below | Apache 2.0 |
+| **Moondream2 (1.86B)** ← v1 | ~1.0 GB | ~2.5 GB | 30-60 s* | 10-20 s* | Comparable | Apache 2.0 |
+| SmolVLM-500M | ~250 MB | ~800 MB | 1-3 s | < 1 s | **Far below — empirically ruled out** | Apache 2.0 |
 | Florence-2-base | ~150 MB | ~500 MB | 0.5-2 s | < 1 s | Strong on captions, weak on Q&A | MIT |
-| Qwen2.5-VL-3B | ~1.5 GB | ~3.5 GB | 8-20 s | 3-8 s | Above | Apache 2.0 |
+| Qwen2.5-VL-3B | ~1.5 GB | ~3.5 GB | 60-120 s* | 20-40 s* | Above | Apache 2.0 |
+
+\* latency revised on 2026-06-23 after Mac CPU FP32 baseline showed ~70 s/query for Moondream2 2B. INT8 quant + XNNPACK gives 2.5–4× speedup vs Mac CPU FP32, hence the new envelopes.
 
 **Moondream2 picked** because:
 
@@ -48,7 +50,27 @@ Considered four candidates before locking the v1 pick:
 - Apache 2.0 — clean for commercial paid app
 - Battle-tested on Apple Silicon + Android community projects
 
-**Fallback if Moondream2 ONNX port breaks during validation**: SmolVLM-500M. Worse quality, but Idefics3 architecture is first-class in `transformers` (no custom modeling code = cleaner ONNX export pipeline).
+**Fallback if Moondream2 ONNX port breaks during validation**: ~~SmolVLM-500M~~ — **ruled out empirically on 2026-06-23**. SmolVLM-500M produces TalkBack-level generic captions ("Screen displaying multiple options in a voice application") on screenshots that Moondream2 transcribes near-verbatim. The 17× latency advantage doesn't matter if the output adds zero information. New fallback: **Moondream 0.5B variant** (smaller quant of the same family) — quality should degrade gracefully, not architecturally.
+
+### Day-1 Mac validation findings (2026-06-23)
+
+Test image: 960×2142 screenshot of the ReadAloud Voice picker UI. Mac M-series CPU, FP32, full 2B model via HF transformers (workaround for MPS bug: monkey-patch `torch.backends.mps.is_available` to False before model import — Moondream2's `vision.py` force-routes outputs to MPS otherwise).
+
+| Mode | Moondream2 2B FP32 latency | Quality |
+|---|---|---|
+| Short caption | 62.5 s | App name correct, some hallucination of UI labels |
+| Detailed | 75.8 s | Solid — gets layout + options right, hallucinates the specific voice names |
+| Read text (OCR-style) | 66.7 s | **Strong** — near-verbatim transcription of visible UI text |
+
+**Implication for Android latency estimates** (revised downward from initial scoping):
+
+| Device | Original estimate | Revised estimate (INT8 + ONNX Runtime + XNNPACK, derived from Mac CPU baseline / 2.5–4×) |
+|---|---|---|
+| Pixel 9 (Tensor G4) | 2–6 s | **10–20 s** |
+| Pixel 6 (Tensor G1) | 5–15 s | **30–60 s** |
+| Mid-range Snapdragon | (not stated) | **45–90 s** |
+
+This is a UX problem — the difference between "fast enough to feel instant" and "user has to wait." Mitigation has to be in the app UI: surface short-caption first (~5 s), stream detailed/read-text in background, with clear progress indicators.
 
 ---
 
@@ -99,14 +121,16 @@ Empty state (app opened directly, no image): `[ Camera ] [ Choose from gallery ]
 
 ## Engineering effort
 
+**Day-1 discovery (2026-06-23)**: `Xenova/moondream2` on HuggingFace publishes the full ONNX export at every quant tier (FP16, INT8, Q4, Q4F16, BNB4). **This eliminates the riskiest piece of week-1 work** — we don't have to build the export pipeline ourselves. We just download Xenova's bundle.
+
 | Week | Work | Output |
 |---|---|---|
-| 1 | Mac validation. Pull Moondream2 INT8 ONNX. Run on a 20-image test corpus (screenshots, photos, scenes, text-heavy). Compare INT8 quality vs FP16 baseline. If INT8 degrades materially, decide: ship FP16 or pick SmolVLM. | Go/no-go on Moondream2 + locked model variant |
-| 2 | Android Studio project scaffolding. Manifest with share intent + camera permission. Compose UI shell with placeholder text. WorkManager model downloader (clone Kokoro pattern). | App on Pixel showing static placeholder text after sharing an image |
-| 3 | ONNX Runtime inference integration. Image preprocessing (resize, normalize, batch). Vision encoder session. Text decoder session with token loop. Stop conditions (EOS token, max tokens, timeout). | End-to-end: share image → real description appears on screen |
-| 4 | TTS handoff (detect `com.listenai.voice`, fall back to system). UI polish (loading state, error state, "describe again"). Play Console listing. Internal Testing release with `warcarr@gmail.com` on the tester list. | Shippable v1 to Play Internal |
+| 1 | ~~Build the ONNX export pipeline~~ — eliminated by Xenova's prebuilt bundle. Instead: pull Xenova's INT8 + Q4F16 bundles, run inference via `onnxruntime` Python (same runtime as Android), validate quality holds vs the FP32 baseline on a 10-image corpus. Lock the variant (mixed-quant bundle ~1.07 GB or pure INT8 ~1.78 GB). | Go/no-go on the quantized bundle + final variant locked |
+| 2 | Android Studio project scaffolding. Manifest with share intent + camera permission. Compose UI shell with placeholder text. WorkManager downloader pulling the three ONNX files from HuggingFace at first launch. | App on Pixel showing static placeholder text after sharing an image |
+| 3 | ONNX Runtime Android inference integration. Image preprocessing (resize, normalize, batch). Three sessions (vision encoder + embed tokens + decoder). Token loop with KV cache. Stop conditions (EOS, max tokens, timeout). | End-to-end: share image → real description appears on screen |
+| 4 | TTS handoff (detect `com.listenai.voice`, fall back to system). UI polish (loading state with progress, error state, "describe again"). Play Console listing. Internal Testing release with `warcarr@gmail.com` on the tester list. | Shippable v1 to Play Internal |
 
-**Total focused: ~3 weeks. Realistic calendar at 30-50 % capacity: 5-7 weeks.**
+**Total focused: ~3 weeks (down from 4 thanks to the Xenova discovery). Realistic calendar at 30-50 % capacity: 4-6 weeks.**
 
 ---
 
@@ -114,9 +138,11 @@ Empty state (app opened directly, no image): `[ Camera ] [ Choose from gallery ]
 
 | Risk | Likelihood | Plan |
 |---|---|---|
-| Moondream2 INT8 quantization erodes quality below Gemini Nano | Medium | Ship FP16 (2× model size, ~2 GB) if quality drop is unacceptable |
-| Token-by-token decode is too slow on older Pixels (15 s+) | Medium | Limit to short-caption mode by default; surface detailed/long modes as opt-in "give me more" tap |
-| 1 GB model download deters install | Medium | First-launch flow that says "downloading once, this is the whole AI" before kicking off — and let user opt into a smaller fallback model |
+| **Confident hallucination on document text** (passport, receipts, IDs) — observed on Day-1 corpus, Moondream2 invented specific DOB/sex/place-of-birth on a real passport | **High and confirmed** | **Do NOT market as document/text reader.** Frame the app as "describes the scene in your image", route text-only images through ML Kit OCR (already in our stack), present all VLM output with epistemic hedging ("looks like…", "I see…") |
+| Repetition-loop generation on complex layouts (diagram corpus image) | Medium, mitigatable | Set `repetition_penalty=1.1`, `no_repeat_ngram_size=3`, hard `max_new_tokens=200` in the decoder generation config. Standard ONNX Runtime session inputs. |
+| Moondream2 INT8 quantization erodes quality below the FP32 baseline | Medium | Day-2 corpus re-run on Xenova's INT8/Q4F16 bundle confirms or rejects. Fall back to FP16 (~3.5 GB) if needed. |
+| Token-by-token decode is too slow on older Pixels (~30-60 s) | **High, confirmed by Mac CPU baseline** | Limit default to short-caption mode (~50 tokens, ~15-20 s on Pixel 9). Surface detailed/long modes as "give me more" tap. Show progress indicator throughout. |
+| ~1.1 GB model download deters install | Medium | First-launch flow that says "downloading once, this is the whole AI" before kicking off — Wi-Fi-only, WorkManager foreground notification |
 | BVI users are iOS-dominant, Android-only product has a smaller TAM | High but unchangeable for now | Make sure the engine code is portable enough that an iOS port is a 1-month project not a 6-month one |
 | Seeing AI being free + Microsoft-funded erodes our differentiation | High | Lean hard on: privacy (offline by design), voice integration with ReadAloud Voice, no Microsoft account requirement, faster on-device for typical use |
 
@@ -126,13 +152,17 @@ Empty state (app opened directly, no image): `[ Camera ] [ Choose from gallery ]
 
 | # | Decision | Choice |
 |---|---|---|
-| 1 | Primary model | Moondream2 |
+| 1 | Primary model | Moondream2 (vikhyatk/moondream2 revision 2025-04-14) |
 | 2 | Cloud fallback | **None** — pure on-device |
 | 3 | App name | ReadAloud Describe |
 | 4 | Application ID | `com.listenai.describe` |
 | 5 | Repo location | `~/Documents/GitHub/ReadAloudDescribe/` (this repo) |
 | 6 | Pricing | $4.99 one-time, no subscription, no IAP tiers |
 | 7 | Distribution | Play Store Internal → Closed → Open → Production, mirroring ReadAloud Voice rollout |
+| 8 | Inference runtime | ONNX Runtime Android (same as ReadAloud Voice's Kokoro/Piper stack) |
+| 9 | Model source | `Xenova/moondream2` on HuggingFace (prebuilt ONNX exports — no custom export pipeline) |
+| 10 | Quant bundle (v1) | Mixed: `vision_encoder_q4` + `decoder_model_merged_q4f16` + `embed_tokens_int8` ≈ 1.07 GB. Fallback to pure INT8 (~1.78 GB) if quality drops too much. |
+| 11 | Fallback if Moondream2 ONNX path collapses | Older `vikhyatk/moondream1` (same family, smaller) — **not** SmolVLM-500M (empirically ruled out 2026-06-23 for being TalkBack-level generic) |
 
 ---
 
