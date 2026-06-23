@@ -1,0 +1,34 @@
+# Android / Gradle
+*.iml
+.gradle/
+local.properties
+.idea/
+.DS_Store
+build/
+captures/
+.externalNativeBuild/
+.cxx/
+*.apk
+*.aab
+*.keystore
+keystore.properties
+
+# Python (Mac validation spike)
+.venv/
+venv/
+__pycache__/
+*.pyc
+*.pyo
+.pytest_cache/
+
+# Model weights — too large for git, store on HF or signed URL
+*.onnx
+*.gguf
+*.safetensors
+*.bin
+models/
+
+# Editor / OS
+*.swp
+.vscode/
+*.log
