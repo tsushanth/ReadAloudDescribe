@@ -26,6 +26,7 @@ import androidx.compose.ui.Modifier
 import androidx.compose.ui.res.stringResource
 import androidx.compose.ui.unit.dp
 import coil.compose.AsyncImage
+import com.listenai.describe.llama.LlamaEngine
 import com.listenai.describe.ui.theme.ReadAloudDescribeTheme
 
 /**
@@ -46,9 +47,22 @@ class DescribeActivity : ComponentActivity() {
         val sharedImage = extractSharedImage(intent)
         Log.i(TAG, "onCreate sharedImage=$sharedImage")
 
+        // Day-5 surface check — call into libdescribe_jni.so to verify
+        // the native llama.cpp build is alive. Captured to a string we
+        // render in the UI; if the JNI load fails (e.g. .so missing,
+        // wrong ABI, unresolved symbols), we catch + display the error
+        // instead of crashing so we can debug from the UI.
+        val nativeInfo = try {
+            LlamaEngine.nativeSystemInfo()
+        } catch (t: Throwable) {
+            Log.e(TAG, "LlamaEngine.nativeSystemInfo failed", t)
+            "LlamaEngine FAILED: ${t.javaClass.simpleName}: ${t.message}"
+        }
+        Log.i(TAG, "nativeSystemInfo => $nativeInfo")
+
         setContent {
             ReadAloudDescribeTheme {
-                DescribeScreen(sharedImage = sharedImage)
+                DescribeScreen(sharedImage = sharedImage, nativeInfo = nativeInfo)
             }
         }
     }
@@ -64,9 +78,17 @@ class DescribeActivity : ComponentActivity() {
         setIntent(intent)
         val sharedImage = extractSharedImage(intent)
         Log.i(TAG, "onNewIntent sharedImage=$sharedImage")
+        // System-info is process-lifetime — only sample once. Reusing
+        // the value from onCreate would require state plumbing; for a
+        // Day-5 diagnostic, re-call is fine + cheap (it's a strcpy).
+        val nativeInfo = try {
+            LlamaEngine.nativeSystemInfo()
+        } catch (t: Throwable) {
+            "LlamaEngine FAILED: ${t.javaClass.simpleName}: ${t.message}"
+        }
         setContent {
             ReadAloudDescribeTheme {
-                DescribeScreen(sharedImage = sharedImage)
+                DescribeScreen(sharedImage = sharedImage, nativeInfo = nativeInfo)
             }
         }
     }
@@ -108,22 +130,22 @@ class DescribeActivity : ComponentActivity() {
 
 @OptIn(ExperimentalMaterial3Api::class)
 @Composable
-private fun DescribeScreen(sharedImage: Uri?) {
+private fun DescribeScreen(sharedImage: Uri?, nativeInfo: String) {
     Scaffold(
         topBar = {
             TopAppBar(title = { Text(stringResource(R.string.app_name)) })
         }
     ) { padding ->
         if (sharedImage != null) {
-            ImageReceivedContent(sharedImage, padding)
+            ImageReceivedContent(sharedImage, nativeInfo, padding)
         } else {
-            EmptyStateContent(padding)
+            EmptyStateContent(nativeInfo, padding)
         }
     }
 }
 
 @Composable
-private fun ImageReceivedContent(uri: Uri, padding: PaddingValues) {
+private fun ImageReceivedContent(uri: Uri, nativeInfo: String, padding: PaddingValues) {
     Column(
         modifier = Modifier
             .fillMaxSize()
@@ -164,22 +186,38 @@ private fun ImageReceivedContent(uri: Uri, padding: PaddingValues) {
             style = MaterialTheme.typography.bodySmall,
             color = MaterialTheme.colorScheme.onSurfaceVariant
         )
+        // Day-5 surface check — render the llama.cpp system_info string
+        // so we can visually confirm the native build worked. Goes away
+        // in Day 7 when real inference output replaces the placeholder.
+        Text(
+            text = nativeInfo,
+            style = MaterialTheme.typography.bodySmall,
+            color = MaterialTheme.colorScheme.onSurfaceVariant
+        )
     }
 }
 
 @Composable
-private fun EmptyStateContent(padding: PaddingValues) {
-    Box(
+private fun EmptyStateContent(nativeInfo: String, padding: PaddingValues) {
+    Column(
         modifier = Modifier
             .fillMaxSize()
             .padding(padding)
             .padding(24.dp),
-        contentAlignment = Alignment.Center
+        verticalArrangement = Arrangement.spacedBy(24.dp),
+        horizontalAlignment = Alignment.CenterHorizontally
     ) {
+        Box(modifier = Modifier.padding(top = 80.dp)) {
+            Text(
+                text = stringResource(R.string.empty_state_share_hint),
+                style = MaterialTheme.typography.bodyLarge,
+                textAlign = androidx.compose.ui.text.style.TextAlign.Center
+            )
+        }
         Text(
-            text = stringResource(R.string.empty_state_share_hint),
-            style = MaterialTheme.typography.bodyLarge,
-            textAlign = androidx.compose.ui.text.style.TextAlign.Center
+            text = nativeInfo,
+            style = MaterialTheme.typography.bodySmall,
+            color = MaterialTheme.colorScheme.onSurfaceVariant
         )
     }
 }
