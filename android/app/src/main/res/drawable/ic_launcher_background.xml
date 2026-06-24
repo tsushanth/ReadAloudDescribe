@@ -1,7 +1,10 @@
 <?xml version="1.0" encoding="utf-8"?>
-<!-- Placeholder solid-color background. Real icon comes in Day-8 Play
-     Store prep, designed by Recraft like the voice flavor was. -->
+<!-- Deep teal background matching the Recraft-generated PNG foreground
+     (hex 0E7C7B). The foreground PNG is centered + already has the
+     same teal at its edges, so the adaptive-icon mask blends cleanly
+     into this background color regardless of launcher shape (circle,
+     squircle, square, etc). -->
 <shape xmlns:android="http://schemas.android.com/apk/res/android"
     android:shape="rectangle">
-    <solid android:color="#0B5394" />
+    <solid android:color="#0E7C7B" />
 </shape>
