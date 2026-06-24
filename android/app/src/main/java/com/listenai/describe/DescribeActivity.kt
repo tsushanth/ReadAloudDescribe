@@ -30,7 +30,9 @@ import androidx.compose.runtime.collectAsState
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
+import androidx.compose.runtime.rememberCoroutineScope
 import androidx.compose.runtime.setValue
+import kotlinx.coroutines.launch
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.platform.LocalContext
@@ -183,6 +185,12 @@ private fun DescribeScreen(sharedImage: Uri?, nativeInfo: String) {
         onDispose { tts.shutdown() }
     }
 
+    // Compose-scoped coroutine for the JNI streaming callback to
+    // marshal back onto the main thread. The callback fires from
+    // an inference thread (not the main thread, not a coroutine),
+    // so it can't touch Compose state directly.
+    val scope = rememberCoroutineScope()
+
     // When the downloader settles into Ready, auto-load both models
     // via the JNI bridge on Dispatchers.IO.
     LaunchedEffect(downloadState) {
@@ -212,8 +220,12 @@ private fun DescribeScreen(sharedImage: Uri?, nativeInfo: String) {
     }
 
     // When a shared image arrives AND the engine is loaded, auto-call
-    // nativeDescribeImage on a background coroutine. Reads the URI's
-    // bytes via ContentResolver, hands them to JNI.
+    // the STREAMING describe path on a background coroutine. Reads the
+    // URI's bytes via ContentResolver, then receives tokens one at a
+    // time via the JNI callback. Each sentence (terminated by .?!) is
+    // flushed to TTS via speakChunkAppend so playback starts ~15-20s
+    // in (after the first sentence) instead of after the full ~70-80s
+    // decode.
     LaunchedEffect(sharedImage, engineHandle) {
         val uri = sharedImage ?: return@LaunchedEffect
         if (engineHandle == 0L) return@LaunchedEffect
@@ -232,36 +244,85 @@ private fun DescribeScreen(sharedImage: Uri?, nativeInfo: String) {
                 ByteArray(0)
             }
             if (bytes.isEmpty()) {
-                description = "(error: couldn't read image — adb-test paths need real Photos share to grant URI permission)"
+                description = "(error: couldn't read image)"
                 describing = false
                 return@withContext
             }
-            Log.i("DescribeActivity", "image read: ${bytes.size} bytes, calling nativeDescribeImage")
+            Log.i("DescribeActivity", "image read: ${bytes.size} bytes, calling nativeDescribeImageStream")
+
+            val accumulated = StringBuilder(2048)
+            val ttsBuffer = StringBuilder(256)
+            var firstChunkSent = false
+            val tokensDone = kotlinx.coroutines.CompletableDeferred<Int>()
+
+            val callback = object : LlamaEngine.DescribeCallback {
+                override fun onToken(piece: String) {
+                    accumulated.append(piece)
+                    ttsBuffer.append(piece)
+
+                    // Sentence-boundary flush: when ttsBuffer ends in
+                    // .?!, send it to TTS + clear. Keeps speech
+                    // natural-sounding (TTS works best on whole
+                    // sentences with proper prosody).
+                    val last = ttsBuffer.lastOrNull()
+                    if (last != null && last in ".!?" && ttsBuffer.length > 10) {
+                        val sentence = ttsBuffer.toString().trim()
+                        ttsBuffer.clear()
+                        // Hop to main thread for the TTS call —
+                        // android.speech.tts requires main-thread invoke.
+                        scope.launch(Dispatchers.Main) {
+                            if (!firstChunkSent) {
+                                tts.speakChunkFirst(sentence)
+                                firstChunkSent = true
+                            } else {
+                                tts.speakChunkAppend(sentence)
+                            }
+                        }
+                    }
+                    // Live UI update — also marshal to main.
+                    scope.launch(Dispatchers.Main) {
+                        description = accumulated.toString()
+                    }
+                }
+                override fun onComplete(generated: Int) {
+                    // Flush any trailing buffer that didn't end on .?!
+                    if (ttsBuffer.isNotBlank()) {
+                        val tail = ttsBuffer.toString().trim()
+                        ttsBuffer.clear()
+                        scope.launch(Dispatchers.Main) {
+                            if (!firstChunkSent) tts.speakChunkFirst(tail)
+                            else tts.speakChunkAppend(tail)
+                        }
+                    }
+                    tokensDone.complete(generated)
+                }
+                override fun onError(message: String) {
+                    Log.e("DescribeActivity", "describe stream error: $message")
+                    scope.launch(Dispatchers.Main) {
+                        description = "(error: $message)"
+                    }
+                    tokensDone.complete(0)
+                }
+            }
+
             val t0 = System.currentTimeMillis()
-            val text = try {
-                LlamaEngine.nativeDescribeImage(
+            try {
+                LlamaEngine.nativeDescribeImageStream(
                     handle = engineHandle,
                     imageBytes = bytes,
                     prompt = "Describe this image in detail for someone who cannot see it.",
                     maxTokens = 200,
+                    callback = callback,
                 )
             } catch (t: Throwable) {
-                Log.e("DescribeActivity", "nativeDescribeImage threw", t)
-                "(error: ${t.javaClass.simpleName})"
+                Log.e("DescribeActivity", "nativeDescribeImageStream threw", t)
+                tokensDone.complete(0)
             }
+            val generated = tokensDone.await()
             val dt = System.currentTimeMillis() - t0
-            Log.i("DescribeActivity", "describe done in ${dt}ms, len=${text.length}")
-            description = text
+            Log.i("DescribeActivity", "stream done in ${dt}ms, generated=$generated, chars=${accumulated.length}")
             describing = false
         }
-    }
-
-    // Auto-speak the description as soon as it's ready. Skip the
-    // error-payload form so users don't hear "(error: ...)" spoken.
-    LaunchedEffect(description) {
-        val text = description ?: return@LaunchedEffect
-        if (text.startsWith("(error:")) return@LaunchedEffect
-        tts.speak(text)
     }
 
     Scaffold(

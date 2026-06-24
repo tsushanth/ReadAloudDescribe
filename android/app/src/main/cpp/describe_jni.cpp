@@ -315,3 +315,164 @@ Java_com_listenai_describe_llama_LlamaEngine_nativeDescribeImage(
 
     return env->NewStringUTF(result.c_str());
 }
+
+// ----------------------------------------------------------------
+// Day-8d: streaming variant. Same pipeline as nativeDescribeImage,
+// but calls callback.onToken(piece) for every emitted token so the
+// UI / TTS can start consuming output ~15-20s in instead of waiting
+// for the full 70-80s decode. onComplete(generatedTokens) fires once.
+//
+// Callback object MUST implement (matched by JNI signature):
+//   public interface DescribeCallback {
+//       void onToken(String piece);
+//       void onComplete(int generated);
+//       void onError(String message);
+//   }
+//
+// Returns void. Errors surface via onError() (no exceptions thrown).
+// ----------------------------------------------------------------
+extern "C" JNIEXPORT void JNICALL
+Java_com_listenai_describe_llama_LlamaEngine_nativeDescribeImageStream(
+    JNIEnv* env, jobject /* this */,
+    jlong handle,
+    jbyteArray imageBytes,
+    jstring promptStr,
+    jint maxTokens,
+    jobject callback
+) {
+    // Resolve callback methods once up front.
+    jclass cbClass = env->GetObjectClass(callback);
+    jmethodID midOnToken    = env->GetMethodID(cbClass, "onToken", "(Ljava/lang/String;)V");
+    jmethodID midOnComplete = env->GetMethodID(cbClass, "onComplete", "(I)V");
+    jmethodID midOnError    = env->GetMethodID(cbClass, "onError", "(Ljava/lang/String;)V");
+    if (!midOnToken || !midOnComplete || !midOnError) {
+        LOGE("nativeDescribeImageStream: callback missing required methods");
+        return;
+    }
+
+    auto emitError = [&](const char* msg) {
+        jstring jmsg = env->NewStringUTF(msg);
+        env->CallVoidMethod(callback, midOnError, jmsg);
+        env->DeleteLocalRef(jmsg);
+    };
+
+    if (handle == 0) {
+        emitError("engine not loaded");
+        return;
+    }
+    auto* ctx = reinterpret_cast<DescribeContext*>(handle);
+
+    jsize image_len  = env->GetArrayLength(imageBytes);
+    jbyte* image_buf = env->GetByteArrayElements(imageBytes, nullptr);
+    const char* prompt_c = env->GetStringUTFChars(promptStr, nullptr);
+    LOGI("nativeDescribeImageStream image_bytes=%d maxTokens=%d", (int)image_len, (int)maxTokens);
+
+    auto t_start = std::chrono::steady_clock::now();
+
+    auto bitmap_wrap = mtmd_helper_bitmap_init_from_buf(
+        ctx->mtmd,
+        reinterpret_cast<const unsigned char*>(image_buf),
+        image_len, false
+    );
+    if (!bitmap_wrap.bitmap) {
+        env->ReleaseByteArrayElements(imageBytes, image_buf, JNI_ABORT);
+        env->ReleaseStringUTFChars(promptStr, prompt_c);
+        emitError("bad image format");
+        return;
+    }
+
+    const char * marker = mtmd_default_marker();
+    std::string full_prompt;
+    full_prompt += "USER: ";
+    full_prompt += marker;
+    full_prompt += "\n";
+    full_prompt += prompt_c;
+    full_prompt += "\nASSISTANT:";
+
+    mtmd_input_text input_text;
+    input_text.text          = full_prompt.c_str();
+    input_text.add_special   = true;
+    input_text.parse_special = true;
+
+    mtmd_input_chunks * chunks = mtmd_input_chunks_init();
+    const mtmd_bitmap * bitmaps[1] = { bitmap_wrap.bitmap };
+    int32_t tok_rc = mtmd_tokenize(ctx->mtmd, chunks, &input_text, bitmaps, 1);
+    if (tok_rc != 0) {
+        mtmd_input_chunks_free(chunks);
+        mtmd_bitmap_free(bitmap_wrap.bitmap);
+        env->ReleaseByteArrayElements(imageBytes, image_buf, JNI_ABORT);
+        env->ReleaseStringUTFChars(promptStr, prompt_c);
+        char buf[64]; snprintf(buf, sizeof(buf), "tokenize rc=%d", tok_rc);
+        emitError(buf);
+        return;
+    }
+
+    llama_memory_clear(llama_get_memory(ctx->lctx), true);
+
+    llama_pos n_past_out = 0;
+    int32_t eval_rc = mtmd_helper_eval_chunks(
+        ctx->mtmd, ctx->lctx, chunks, 0, 0, 512, true, &n_past_out
+    );
+    if (eval_rc != 0) {
+        mtmd_input_chunks_free(chunks);
+        mtmd_bitmap_free(bitmap_wrap.bitmap);
+        env->ReleaseByteArrayElements(imageBytes, image_buf, JNI_ABORT);
+        env->ReleaseStringUTFChars(promptStr, prompt_c);
+        char buf[64]; snprintf(buf, sizeof(buf), "eval rc=%d", eval_rc);
+        emitError(buf);
+        return;
+    }
+    auto t_after_eval = std::chrono::steady_clock::now();
+    LOGI("stream: prefill done in %lldms",
+         (long long)std::chrono::duration_cast<std::chrono::milliseconds>(t_after_eval - t_start).count());
+
+    const llama_model * model = llama_get_model(ctx->lctx);
+    const llama_vocab * vocab = llama_model_get_vocab(model);
+    const llama_token eos     = llama_vocab_eos(vocab);
+
+    llama_batch batch = llama_batch_init(1, 0, 1);
+
+    int generated = 0;
+    for (int step = 0; step < (int)maxTokens; ++step) {
+        const float * logits = llama_get_logits_ith(ctx->lctx, -1);
+        if (!logits) break;
+        const int32_t n_vocab = llama_vocab_n_tokens(vocab);
+        int best = 0; float best_l = logits[0];
+        for (int i = 1; i < n_vocab; ++i) {
+            if (logits[i] > best_l) { best_l = logits[i]; best = i; }
+        }
+        const llama_token next = (llama_token)best;
+        if (next == eos) break;
+        generated++;
+
+        char piece[64];
+        int n_chars = llama_token_to_piece(vocab, next, piece, sizeof(piece), 0, false);
+        if (n_chars > 0) {
+            jstring jpiece = env->NewStringUTF(std::string(piece, n_chars).c_str());
+            env->CallVoidMethod(callback, midOnToken, jpiece);
+            env->DeleteLocalRef(jpiece);
+        }
+
+        batch.n_tokens     = 1;
+        batch.token[0]     = next;
+        batch.pos[0]       = n_past_out;
+        batch.n_seq_id[0]  = 1;
+        batch.seq_id[0][0] = 0;
+        batch.logits[0]    = 1;
+        if (llama_decode(ctx->lctx, batch) != 0) break;
+        n_past_out += 1;
+    }
+
+    llama_batch_free(batch);
+    mtmd_input_chunks_free(chunks);
+    mtmd_bitmap_free(bitmap_wrap.bitmap);
+    env->ReleaseByteArrayElements(imageBytes, image_buf, JNI_ABORT);
+    env->ReleaseStringUTFChars(promptStr, prompt_c);
+
+    auto t_end = std::chrono::steady_clock::now();
+    LOGI("nativeDescribeImageStream done: %d tokens in %lldms",
+         generated,
+         (long long)std::chrono::duration_cast<std::chrono::milliseconds>(t_end - t_start).count());
+
+    env->CallVoidMethod(callback, midOnComplete, (jint)generated);
+}

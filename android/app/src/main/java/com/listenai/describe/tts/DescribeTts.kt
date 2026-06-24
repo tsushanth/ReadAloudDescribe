@@ -101,6 +101,28 @@ class DescribeTts(private val context: Context) {
         Log.i(TAG, "speak() rc=$rc chars=${text.length} id=$id")
     }
 
+    /**
+     * Queue [chunk] AFTER any currently-speaking utterance. Use this
+     * for streaming TTS: the first chunk uses speak(QUEUE_FLUSH) via
+     * speakChunkFirst, subsequent ones append via this call. The
+     * engine reads the queue in order so the user hears one continuous
+     * description, not gaps between sentences.
+     */
+    fun speakChunkAppend(chunk: String) {
+        if (chunk.isBlank() || !ready) return
+        val id = "describe-chunk-${System.currentTimeMillis()}"
+        val rc = tts?.speak(chunk, TextToSpeech.QUEUE_ADD, null, id)
+        Log.i(TAG, "speakChunkAppend rc=$rc chars=${chunk.length}")
+    }
+
+    fun speakChunkFirst(chunk: String) {
+        if (chunk.isBlank() || !ready) return
+        val id = "describe-chunk-${System.currentTimeMillis()}"
+        _state.value = State.Speaking(charsTotal = chunk.length)
+        val rc = tts?.speak(chunk, TextToSpeech.QUEUE_FLUSH, null, id)
+        Log.i(TAG, "speakChunkFirst rc=$rc chars=${chunk.length}")
+    }
+
     fun stop() {
         tts?.stop()
         _state.value = State.Idle

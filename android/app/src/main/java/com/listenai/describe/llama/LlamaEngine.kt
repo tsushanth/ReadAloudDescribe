@@ -76,4 +76,37 @@ object LlamaEngine {
         prompt: String,
         maxTokens: Int,
     ): String
+
+    /**
+     * Callback fired from the streaming describe path. JNI calls
+     * these methods from the inference thread for each emitted token
+     * and once when the run completes / errors.
+     *
+     * IMPORTANT: methods are invoked from a non-main thread.
+     * Marshal to the main thread before touching Compose state.
+     */
+    interface DescribeCallback {
+        fun onToken(piece: String)
+        fun onComplete(generated: Int)
+        fun onError(message: String)
+    }
+
+    /**
+     * Streaming variant of nativeDescribeImage. Same pipeline (mtmd
+     * tokenize + helper_eval_chunks + greedy decode) but emits each
+     * decoded token to [callback] as soon as it's sampled, instead
+     * of buffering and returning the full string at the end.
+     *
+     * Use this when you want the UI / TTS to start consuming output
+     * mid-generation (saves ~50-60 s of perceived latency on Pixel 9).
+     *
+     * Blocking. Caller invokes off the main thread.
+     */
+    external fun nativeDescribeImageStream(
+        handle: Long,
+        imageBytes: ByteArray,
+        prompt: String,
+        maxTokens: Int,
+        callback: DescribeCallback,
+    )
 }
