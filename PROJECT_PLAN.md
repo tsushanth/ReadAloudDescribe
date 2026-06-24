@@ -159,10 +159,24 @@ Empty state (app opened directly, no image): `[ Camera ] [ Choose from gallery ]
 | 5 | Repo location | `~/Documents/GitHub/ReadAloudDescribe/` (this repo) |
 | 6 | Pricing | $4.99 one-time, no subscription, no IAP tiers |
 | 7 | Distribution | Play Store Internal → Closed → Open → Production, mirroring ReadAloud Voice rollout |
-| 8 | ~~Inference runtime~~ | ~~ONNX Runtime Android~~ → **llama.cpp Android** (Path-B-killed pivot 2026-06-23 evening) |
-| 9 | ~~Model source~~ | ~~`Xenova/moondream2` ONNX exports~~ → **`ggml-org/moondream2-20250414-GGUF`** (multi-crop baked into the upstream LLaVA pipeline; Xenova exports drop quality because their encoder is single-crop only) |
-| 10 | ~~Quant bundle (v1)~~ | ~~ONNX mixed-quant 1.07 GB~~ → **GGUF Q4_K_M ~1.0-1.3 GB** (locally requantized from upstream F16) |
-| 11 | Fallback if Moondream2 path collapses | Older `vikhyatk/moondream1` (same family, smaller) — **not** SmolVLM-500M (empirically ruled out 2026-06-23 for being TalkBack-level generic) |
+| 8 | Inference runtime | **llama.cpp Android** (via `llama.android`) — flipped from ONNX Runtime after Path-B-killed pivot 2026-06-23 evening |
+| 9 | Model source | **`moondream/moondream2-gguf`** (or `ggml-org/moondream2-20250414-GGUF`, interchangeable) — multi-crop baked into the upstream LLaVA pipeline; Xenova ONNX exports drop quality because their encoder is single-crop only |
+| 10 | Quant bundle (v1) | **mmproj F16 (868 MB) + text-model Q5_K_M (991 MB) ≈ 1.86 GB total** — Q5_K_M validated on 2026-06-23 as the sweet spot. **Q4_K_M ruled out**: 6% smaller but hallucinates specific names/places on photos of documents (disqualifying for accessibility use). |
+| 11 | Sampling | Greedy / low-temperature (≤0.2) by default to discourage hallucination on uncertain inputs. Honest descriptions over creative ones. |
+| 12 | Fallback if Moondream2 path collapses | Older `vikhyatk/moondream1` (same family, smaller) — **not** SmolVLM-500M (empirically ruled out 2026-06-23 for being TalkBack-level generic) |
+
+### Day-3 update (2026-06-23 late evening): GGUF validated, Q5_K_M picked
+
+`llama-mtmd-cli` + Moondream2 GGUF runs end-to-end on Mac CPU. **Multi-crop fires natively** (`n_chunks=3` in logs). Quality comparison on a passport photo:
+
+- FP32 HF reference: fabricated wrong name, DOB, sex, passport number, place of birth (every specific value invented — *catastrophic for BVI users*)
+- GGUF F16: described scene honestly, didn't invent text
+- **GGUF Q5_K_M**: same honesty as F16, half the size, 40% faster
+- GGUF Q4_K_M: hallucinated wrong name ("BARRELL") and city ("LAS VEGAS") — disqualified
+
+Latency on Mac CPU: 11 s (Q5_K_M). Projected Android (Q5_K_M + ARM NEON): ~25-35 s Pixel 9, ~50-90 s mid-range Snapdragon. Slower than the ONNX path would have given us, but with trustworthy output instead of confident hallucination — a strictly better trade for accessibility.
+
+See [`spike_notes/2026-06-23_day3_gguf_validated.md`](./spike_notes/2026-06-23_day3_gguf_validated.md) for the full Day-3 investigation.
 
 ### Why we pivoted from ONNX (2026-06-23 evening)
 
