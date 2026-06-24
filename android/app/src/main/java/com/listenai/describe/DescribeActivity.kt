@@ -15,30 +15,40 @@ import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.heightIn
 import androidx.compose.foundation.layout.padding
+import androidx.compose.material3.Button
+import androidx.compose.material3.Card
+import androidx.compose.material3.CardDefaults
 import androidx.compose.material3.ExperimentalMaterial3Api
+import androidx.compose.material3.LinearProgressIndicator
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.Scaffold
 import androidx.compose.material3.Text
 import androidx.compose.material3.TopAppBar
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.LaunchedEffect
+import androidx.compose.runtime.collectAsState
+import androidx.compose.runtime.getValue
+import androidx.compose.runtime.remember
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.res.stringResource
 import androidx.compose.ui.unit.dp
 import coil.compose.AsyncImage
 import com.listenai.describe.llama.LlamaEngine
+import com.listenai.describe.model.GgufModelDownloader
 import com.listenai.describe.ui.theme.ReadAloudDescribeTheme
 
 /**
  * The one and only activity. Two entry points:
  *   1. Launcher tap → opens with no image, shows the "share an image to me"
  *      empty state.
- *   2. Share-sheet (any image type) → opens with the shared image URI in the intent,
- *      Day 5+ will kick off the llama.cpp describe pipeline against it.
+ *   2. Share-sheet (any image type) → opens with the shared image URI in
+ *      the intent.
  *
- * Day-4 scope: receive the intent, display the image. That's it.
- * No inference, no TTS, no downloader. Just prove the share-target wiring
- * works end-to-end and the URI hand-off is clean.
+ * Day-6 surface adds the GGUF model download status card at the top of
+ * both screens — auto-starts on first launch via a LaunchedEffect.
+ * Inference itself still lands in Day 7.
  */
 class DescribeActivity : ComponentActivity() {
 
@@ -78,9 +88,6 @@ class DescribeActivity : ComponentActivity() {
         setIntent(intent)
         val sharedImage = extractSharedImage(intent)
         Log.i(TAG, "onNewIntent sharedImage=$sharedImage")
-        // System-info is process-lifetime — only sample once. Reusing
-        // the value from onCreate would require state plumbing; for a
-        // Day-5 diagnostic, re-call is fine + cheap (it's a strcpy).
         val nativeInfo = try {
             LlamaEngine.nativeSystemInfo()
         } catch (t: Throwable) {
@@ -131,34 +138,124 @@ class DescribeActivity : ComponentActivity() {
 @OptIn(ExperimentalMaterial3Api::class)
 @Composable
 private fun DescribeScreen(sharedImage: Uri?, nativeInfo: String) {
+    val context = LocalContext.current
+    val downloader = remember { GgufModelDownloader.getInstance(context) }
+    val downloadState by downloader.state.collectAsState()
+
+    // Auto-trigger on first composition. Idempotent — the orchestrator
+    // returns immediately if the models are already on disk.
+    LaunchedEffect(Unit) {
+        downloader.startIfPossible()
+    }
+
     Scaffold(
         topBar = {
             TopAppBar(title = { Text(stringResource(R.string.app_name)) })
         }
     ) { padding ->
-        if (sharedImage != null) {
-            ImageReceivedContent(sharedImage, nativeInfo, padding)
-        } else {
-            EmptyStateContent(nativeInfo, padding)
+        Column(
+            modifier = Modifier
+                .fillMaxSize()
+                .padding(padding)
+                .padding(16.dp),
+            verticalArrangement = Arrangement.spacedBy(16.dp)
+        ) {
+            ModelStatusCard(state = downloadState, onRetry = { downloader.startIfPossible() })
+            if (sharedImage != null) {
+                ImageReceivedContent(sharedImage, nativeInfo)
+            } else {
+                EmptyStateContent(nativeInfo)
+            }
         }
     }
 }
 
 @Composable
-private fun ImageReceivedContent(uri: Uri, nativeInfo: String, padding: PaddingValues) {
+private fun ModelStatusCard(
+    state: GgufModelDownloader.State,
+    onRetry: () -> Unit,
+) {
+    // No card when models are ready — keeps the UI clean once setup
+    // is one-time-done. Day 7 will surface inference progress here instead.
+    if (state is GgufModelDownloader.State.Ready) return
+
+    Card(
+        modifier = Modifier.fillMaxWidth(),
+        colors = CardDefaults.cardColors(
+            containerColor = MaterialTheme.colorScheme.surfaceVariant
+        )
+    ) {
+        Column(
+            modifier = Modifier
+                .fillMaxWidth()
+                .padding(16.dp),
+            verticalArrangement = Arrangement.spacedBy(8.dp)
+        ) {
+            when (state) {
+                is GgufModelDownloader.State.Idle -> {
+                    Text(
+                        text = "Voice model not downloaded",
+                        style = MaterialTheme.typography.titleMedium
+                    )
+                    Text(
+                        text = "Required to describe images. ~3.5 GB, downloads on Wi-Fi only.",
+                        style = MaterialTheme.typography.bodyMedium
+                    )
+                    Button(onClick = onRetry) {
+                        Text("Download")
+                    }
+                }
+                is GgufModelDownloader.State.Waiting -> {
+                    Text(
+                        text = "Waiting to download",
+                        style = MaterialTheme.typography.titleMedium
+                    )
+                    Text(
+                        text = state.reason,
+                        style = MaterialTheme.typography.bodyMedium
+                    )
+                }
+                is GgufModelDownloader.State.Downloading -> {
+                    Text(
+                        text = "Downloading voice model — ${state.percent}%",
+                        style = MaterialTheme.typography.titleMedium
+                    )
+                    Text(
+                        text = "${state.fileLabel} (file ${state.fileIndex} of ${state.fileCount}): ${state.downloadedMb} of ${state.totalMb} MB",
+                        style = MaterialTheme.typography.bodyMedium
+                    )
+                    LinearProgressIndicator(
+                        progress = { state.percent / 100f },
+                        modifier = Modifier.fillMaxWidth()
+                    )
+                }
+                is GgufModelDownloader.State.Failed -> {
+                    Text(
+                        text = "Download failed",
+                        style = MaterialTheme.typography.titleMedium,
+                        color = MaterialTheme.colorScheme.error
+                    )
+                    Text(
+                        text = state.message,
+                        style = MaterialTheme.typography.bodyMedium
+                    )
+                    Button(onClick = onRetry) {
+                        Text("Retry")
+                    }
+                }
+                is GgufModelDownloader.State.Ready -> Unit // handled above
+            }
+        }
+    }
+}
+
+@Composable
+private fun ImageReceivedContent(uri: Uri, nativeInfo: String) {
     Column(
-        modifier = Modifier
-            .fillMaxSize()
-            .padding(padding)
-            .padding(16.dp),
+        modifier = Modifier.fillMaxWidth(),
         verticalArrangement = Arrangement.spacedBy(16.dp),
         horizontalAlignment = Alignment.CenterHorizontally
     ) {
-        // Cap AsyncImage height — without an explicit constraint, its
-        // intrinsic measurement (especially while the bitmap is still
-        // loading) can blow past the column's bounds and hide the text
-        // below it. Caught on Day-4 first Pixel render. ContentScale.Fit
-        // so portrait images don't crop.
         AsyncImage(
             model = uri,
             contentDescription = stringResource(R.string.shared_image_content_description),
@@ -178,17 +275,11 @@ private fun ImageReceivedContent(uri: Uri, nativeInfo: String, padding: PaddingV
             text = stringResource(R.string.placeholder_describe_pending),
             style = MaterialTheme.typography.bodyLarge
         )
-        // For Day-4 verification only — confirms the URI handed in by the
-        // share sheet is what we received. Will become the description
-        // text in Day 7.
         Text(
             text = "URI: $uri",
             style = MaterialTheme.typography.bodySmall,
             color = MaterialTheme.colorScheme.onSurfaceVariant
         )
-        // Day-5 surface check — render the llama.cpp system_info string
-        // so we can visually confirm the native build worked. Goes away
-        // in Day 7 when real inference output replaces the placeholder.
         Text(
             text = nativeInfo,
             style = MaterialTheme.typography.bodySmall,
@@ -198,16 +289,13 @@ private fun ImageReceivedContent(uri: Uri, nativeInfo: String, padding: PaddingV
 }
 
 @Composable
-private fun EmptyStateContent(nativeInfo: String, padding: PaddingValues) {
+private fun EmptyStateContent(nativeInfo: String) {
     Column(
-        modifier = Modifier
-            .fillMaxSize()
-            .padding(padding)
-            .padding(24.dp),
+        modifier = Modifier.fillMaxWidth(),
         verticalArrangement = Arrangement.spacedBy(24.dp),
         horizontalAlignment = Alignment.CenterHorizontally
     ) {
-        Box(modifier = Modifier.padding(top = 80.dp)) {
+        Box(modifier = Modifier.padding(top = 40.dp)) {
             Text(
                 text = stringResource(R.string.empty_state_share_hint),
                 style = MaterialTheme.typography.bodyLarge,

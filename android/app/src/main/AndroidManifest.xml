@@ -1,12 +1,21 @@
 <?xml version="1.0" encoding="utf-8"?>
-<manifest xmlns:android="http://schemas.android.com/apk/res/android">
+<manifest xmlns:android="http://schemas.android.com/apk/res/android"
+    xmlns:tools="http://schemas.android.com/tools">
 
-    <!-- INTERNET only needed by the GGUF model downloader (Day 6+).
-         Inference itself is fully offline. -->
+    <!-- INTERNET only needed by the GGUF model downloader. Inference
+         itself is fully offline. -->
     <uses-permission android:name="android.permission.INTERNET" />
     <uses-permission android:name="android.permission.ACCESS_NETWORK_STATE" />
 
-    <!-- For the in-app camera flow (also Day 6+) -->
+    <!-- Foreground service: the GGUF download runs as a foreground
+         service so Android doesn't kill the worker mid-download. Type
+         is "dataSync" per the Android 14+ requirement. -->
+    <uses-permission android:name="android.permission.FOREGROUND_SERVICE" />
+    <uses-permission android:name="android.permission.FOREGROUND_SERVICE_DATA_SYNC" />
+    <uses-permission android:name="android.permission.POST_NOTIFICATIONS" />
+    <uses-permission android:name="android.permission.WAKE_LOCK" />
+
+    <!-- For the in-app camera flow (Day 7+) -->
     <uses-feature
         android:name="android.hardware.camera"
         android:required="false" />
@@ -50,6 +59,14 @@
                 <data android:mimeType="image/*" />
             </intent-filter>
         </activity>
+
+        <!-- Override WorkManager's default JobIntentService to declare
+             the FOREGROUND_SERVICE_DATA_SYNC type, which Android 14+
+             requires for any foreground-promoted WorkManager job. -->
+        <service
+            android:name="androidx.work.impl.foreground.SystemForegroundService"
+            android:foregroundServiceType="dataSync"
+            tools:node="merge" />
 
     </application>
 

@@ -103,6 +103,17 @@ dependencies {
     // Image loading — we display the shared image while inference runs
     implementation("io.coil-kt:coil-compose:2.5.0")
 
+    // WorkManager — runs the GGUF download as a foreground-promoted
+    // background task so it survives app backgrounding, process death,
+    // network changes, and screen-off (same pattern as ReadAloud Voice's
+    // Kokoro downloader).
+    implementation("androidx.work:work-runtime-ktx:2.9.1")
+
+    // OkHttp — used inside the download worker for byte-range resumable
+    // downloads. Stream-to-disk so we never load the 868MB+ files into
+    // RAM.
+    implementation("com.squareup.okhttp3:okhttp:4.12.0")
+
     // Debug
     debugImplementation("androidx.compose.ui:ui-tooling")
     debugImplementation("androidx.compose.ui:ui-test-manifest")
