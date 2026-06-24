@@ -338,11 +338,16 @@ private fun DescribeScreen(sharedImage: Uri?, nativeInfo: String) {
             verticalArrangement = Arrangement.spacedBy(16.dp)
         ) {
             ModelStatusCard(state = downloadState, onRetry = { downloader.startIfPossible() })
-            Text(
-                text = engineStatus,
-                style = MaterialTheme.typography.bodySmall,
-                color = MaterialTheme.colorScheme.onSurfaceVariant
-            )
+            // Engine handle + llama system_info are dev-only diagnostics.
+            // Hide in release builds so Play screenshots / shipped UI
+            // stay clean.
+            if (BuildConfig.DEBUG) {
+                Text(
+                    text = engineStatus,
+                    style = MaterialTheme.typography.bodySmall,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant
+                )
+            }
             if (sharedImage != null) {
                 ImageReceivedContent(
                     uri = sharedImage,
@@ -517,12 +522,14 @@ private fun ImageReceivedContent(
                 )
             }
         }
-        // Diagnostics row — kept until Day-8 polish removes it.
-        Text(
-            text = nativeInfo,
-            style = MaterialTheme.typography.bodySmall,
-            color = MaterialTheme.colorScheme.onSurfaceVariant
-        )
+        // Diagnostics — debug-only.
+        if (BuildConfig.DEBUG) {
+            Text(
+                text = nativeInfo,
+                style = MaterialTheme.typography.bodySmall,
+                color = MaterialTheme.colorScheme.onSurfaceVariant
+            )
+        }
     }
 }
 
@@ -540,10 +547,12 @@ private fun EmptyStateContent(nativeInfo: String) {
                 textAlign = androidx.compose.ui.text.style.TextAlign.Center
             )
         }
-        Text(
-            text = nativeInfo,
-            style = MaterialTheme.typography.bodySmall,
-            color = MaterialTheme.colorScheme.onSurfaceVariant
-        )
+        if (BuildConfig.DEBUG) {
+            Text(
+                text = nativeInfo,
+                style = MaterialTheme.typography.bodySmall,
+                color = MaterialTheme.colorScheme.onSurfaceVariant
+            )
+        }
     }
 }

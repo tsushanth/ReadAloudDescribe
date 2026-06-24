@@ -1,0 +1,62 @@
+default_platform(:android)
+
+# fastlane lanes for ReadAloud Describe (com.listenai.describe).
+# Shares the same Google Play service account + signing keystore as
+# ReadAloud AI / ReadAloud Voice, so this is purely a per-app lane
+# definition + AAB path swap.
+
+platform :android do
+
+  desc "Push the latest release AAB to Internal Testing on com.listenai.describe."
+  lane :internal do
+    upload_to_play_store(
+      track: "internal",
+      aab: "app/build/outputs/bundle/release/app-release.aab",
+      skip_upload_metadata: true,
+      skip_upload_images: true,
+      skip_upload_screenshots: true,
+      skip_upload_changelogs: true,
+      release_status: "completed",
+    )
+  end
+
+  desc "Push the latest release AAB to Closed Testing (alpha track) on com.listenai.describe."
+  lane :closed_testing do
+    upload_to_play_store(
+      track: "alpha",
+      aab: "app/build/outputs/bundle/release/app-release.aab",
+      skip_upload_metadata: true,
+      skip_upload_images: true,
+      skip_upload_screenshots: true,
+      skip_upload_changelogs: true,
+      release_status: "completed",
+    )
+  end
+
+  desc "Push the latest release AAB to Open Testing (beta track) on com.listenai.describe."
+  lane :open_testing do
+    upload_to_play_store(
+      track: "beta",
+      aab: "app/build/outputs/bundle/release/app-release.aab",
+      skip_upload_metadata: true,
+      skip_upload_images: true,
+      skip_upload_screenshots: true,
+      skip_upload_changelogs: true,
+      release_status: "completed",
+    )
+  end
+
+  desc "Push the latest release AAB to Production on com.listenai.describe."
+  lane :deploy do
+    upload_to_play_store(
+      track: "production",
+      aab: "app/build/outputs/bundle/release/app-release.aab",
+      skip_upload_metadata: true,
+      skip_upload_images: true,
+      skip_upload_screenshots: true,
+      skip_upload_changelogs: false,
+      release_status: "completed",
+    )
+  end
+
+end

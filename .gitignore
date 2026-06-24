@@ -12,7 +12,9 @@ captures/
 *.apk
 *.aab
 *.keystore
+*.jks
 keystore.properties
+android/keystore.properties
 
 # Python (Mac validation spike)
 .venv/

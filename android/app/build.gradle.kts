@@ -1,7 +1,17 @@
+import java.util.Properties
+
 plugins {
     id("com.android.application")
     id("org.jetbrains.kotlin.android")
     id("org.jetbrains.kotlin.plugin.compose")
+}
+
+// Load keystore properties from a local-only file (NOT committed).
+// Same shared-keystore pattern as ReadAloudAI/ReadAloud Voice so
+// Play Console treats this as the same publisher identity.
+val keystorePropertiesFile = rootProject.file("keystore.properties")
+val keystoreProperties = Properties().apply {
+    if (keystorePropertiesFile.exists()) load(keystorePropertiesFile.inputStream())
 }
 
 android {
@@ -12,7 +22,7 @@ android {
         applicationId = "com.listenai.describe"
         minSdk = 26
         targetSdk = 35
-        versionCode = 1
+        versionCode = 2
         versionName = "0.1.0"
 
         // arm64-v8a only for now — Day-5+ ships native llama.cpp .so files
@@ -44,16 +54,20 @@ android {
     }
 
     signingConfigs {
-        // Day-4 ships unsigned debug only; the signing config matching
-        // ReadAloud Voice's keystore comes in Day-6 when we wire fastlane.
+        create("release") {
+            if (keystorePropertiesFile.exists()) {
+                storeFile     = file(keystoreProperties["storeFile"] as String)
+                storePassword = keystoreProperties["storePassword"] as String
+                keyAlias      = keystoreProperties["keyAlias"] as String
+                keyPassword   = keystoreProperties["keyPassword"] as String
+            }
+        }
     }
 
     buildTypes {
         release {
             isMinifyEnabled = false
-            // Debug-signed for now so adb install works; swap to a proper
-            // keystore when we set up Play uploads.
-            signingConfig = signingConfigs.getByName("debug")
+            signingConfig = signingConfigs.getByName("release")
         }
         debug {
             isMinifyEnabled = false
