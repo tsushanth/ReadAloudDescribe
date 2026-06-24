@@ -20,6 +20,19 @@
         android:name="android.hardware.camera"
         android:required="false" />
 
+    <!-- Android 11+ requires explicit <queries> to see other installed
+         packages. Without this, PackageManager.getApplicationInfo()
+         for com.listenai.voice throws NameNotFoundException even when
+         the app IS installed — and we silently fall back to the system
+         default TTS engine. Declaring it here lets us pick our companion
+         engine when present. -->
+    <queries>
+        <package android:name="com.listenai.voice" />
+        <intent>
+            <action android:name="android.intent.action.TTS_SERVICE" />
+        </intent>
+    </queries>
+
     <application
         android:name=".DescribeApplication"
         android:allowBackup="true"
