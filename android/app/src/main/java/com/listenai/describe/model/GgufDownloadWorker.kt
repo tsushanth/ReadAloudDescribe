@@ -81,6 +81,16 @@ class GgufDownloadWorker(
                     grandDownloaded += dest.length()
                     continue
                 }
+                // If a previous failed attempt left a file LARGER than
+                // the expected size (e.g. HEAD returned a wrong value
+                // earlier and we wrote junk past the real EOF), our
+                // byte-range resume would set Range: bytes=<too-large>-
+                // and the server would 416. Truncate to 0 and re-fetch
+                // from scratch.
+                if (dest.exists() && dest.length() > expectedSize) {
+                    Log.w(TAG, "${t.fileName} on disk (${dest.length()}) > expected ($expectedSize); truncating + restarting")
+                    dest.delete()
+                }
 
                 downloadOne(
                     client = client,
