@@ -37,6 +37,41 @@ add_subdirectory(
     EXCLUDE_FROM_ALL
 )
 
+# mtmd (multimodal) lives in tools/mtmd. We do NOT add_subdirectory it
+# because tools/mtmd/CMakeLists.txt unconditionally defines six CLI
+# executables (llama-llava-cli, llama-gemma3-cli, llama-minicpmv-cli,
+# llama-qwen2vl-cli, llama-mtmd-cli, llama-mtmd-debug) that depend on
+# llama-common's arg.h header — and llama-common is something we don't
+# (and can't, per mtmd's own design) link against. EXCLUDE_FROM_ALL
+# on the subdirectory doesn't help: AGP/ninja builds them anyway.
+#
+# Instead: define a private mtmd library here from the same sources
+# the upstream tools/mtmd/CMakeLists.txt lists. Tracks closely with
+# upstream — if they add a model file, this list needs updating.
+set(MTMD_DIR    ${CMAKE_SOURCE_DIR}/../../../../../third_party/llama.cpp/tools/mtmd)
+set(LLAMA_DIR   ${CMAKE_SOURCE_DIR}/../../../../../third_party/llama.cpp)
+
+file(GLOB MTMD_MODEL_SOURCES ${MTMD_DIR}/models/*.cpp)
+
+add_library(mtmd STATIC
+    ${MTMD_DIR}/mtmd.cpp
+    ${MTMD_DIR}/mtmd-audio.cpp
+    ${MTMD_DIR}/mtmd-image.cpp
+    ${MTMD_DIR}/mtmd-helper.cpp
+    ${MTMD_DIR}/clip.cpp
+    ${MTMD_MODEL_SOURCES}
+)
+target_link_libraries(mtmd PUBLIC ggml llama)
+target_include_directories(mtmd PUBLIC  ${MTMD_DIR})
+target_include_directories(mtmd PRIVATE ${LLAMA_DIR})
+target_include_directories(mtmd PRIVATE ${LLAMA_DIR}/vendor)
+target_compile_features(mtmd PRIVATE cxx_std_17)
+
+# miniaudio.h defines a function without a prior prototype that
+# triggers a Clang warning-as-error on Android. Suppress it (the
+# upstream tools/mtmd/CMakeLists does the same).
+target_compile_options(mtmd PRIVATE -Wno-missing-prototypes)
+
 # ----------------------------------------------------------------
 # Our JNI bridge library
 # ----------------------------------------------------------------
@@ -44,6 +79,12 @@ add_library(describe_jni SHARED describe_jni.cpp)
 
 target_link_libraries(describe_jni
     PRIVATE
+        # mtmd transitively links llama + ggml + threads, so listing
+        # mtmd alone would be enough — but we keep the others explicit
+        # for clarity + to insulate against upstream refactors. Note:
+        # mtmd-helper is NOT a separate library; its sources are
+        # compiled into the mtmd library above.
+        mtmd
         llama
         ggml
         ggml-base

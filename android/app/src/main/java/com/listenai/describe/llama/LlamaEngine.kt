@@ -31,4 +31,27 @@ object LlamaEngine {
      *   system_info: AVX = 0 | AVX2 = 0 | NEON = 1 | DOTPROD = 1 | ...
      */
     external fun nativeSystemInfo(): String
+
+    /**
+     * Loads both the multimodal projector (mmproj) and the text-model
+     * GGUF files. Returns an opaque handle (a C++ pointer cast to long)
+     * the caller must hand back to nativeDescribeImage and
+     * nativeFreeModels. Returns 0L on failure — check logcat for the
+     * specific failure (file missing, GGUF corrupt, OOM, etc).
+     *
+     * This is a heavy call: it mmaps both files (~3.5 GB combined for
+     * F16, ~1.86 GB for Q5_K_M), allocates the KV cache (~tens of MB
+     * for n_ctx=2048), and creates the mtmd vision context.
+     * Allow ~3-10 s on Pixel 9.
+     *
+     * MUST be called off the main thread.
+     */
+    external fun nativeLoadModels(mmprojPath: String, textModelPath: String): Long
+
+    /**
+     * Releases all native resources held by the handle returned from
+     * nativeLoadModels. Safe to call with 0L (no-op). After this call,
+     * the handle is invalid — using it again is a use-after-free.
+     */
+    external fun nativeFreeModels(handle: Long)
 }

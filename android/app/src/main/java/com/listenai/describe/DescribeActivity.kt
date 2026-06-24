@@ -28,7 +28,9 @@ import androidx.compose.runtime.Composable
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.collectAsState
 import androidx.compose.runtime.getValue
+import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
+import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.platform.LocalContext
@@ -38,6 +40,8 @@ import coil.compose.AsyncImage
 import com.listenai.describe.llama.LlamaEngine
 import com.listenai.describe.model.GgufModelDownloader
 import com.listenai.describe.ui.theme.ReadAloudDescribeTheme
+import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.withContext
 
 /**
  * The one and only activity. Two entry points:
@@ -142,10 +146,44 @@ private fun DescribeScreen(sharedImage: Uri?, nativeInfo: String) {
     val downloader = remember { GgufModelDownloader.getInstance(context) }
     val downloadState by downloader.state.collectAsState()
 
+    // Engine-load state. Day-7a: just track loaded/not-loaded as a
+    // String for visibility. Day-7b will swap to a proper sealed
+    // class once we add nativeDescribeImage on top.
+    var engineStatus by remember { mutableStateOf("Engine: not loaded") }
+
     // Auto-trigger on first composition. Idempotent — the orchestrator
     // returns immediately if the models are already on disk.
     LaunchedEffect(Unit) {
         downloader.startIfPossible()
+    }
+
+    // When the downloader settles into Ready, auto-load both models
+    // via the JNI bridge on Dispatchers.IO. We hold the resulting
+    // handle in a process-singleton (LlamaEngineHolder) so it survives
+    // configuration changes + share-target re-entries.
+    LaunchedEffect(downloadState) {
+        if (downloadState is GgufModelDownloader.State.Ready && LlamaEngineHolder.handle == 0L) {
+            engineStatus = "Loading engine…"
+            withContext(Dispatchers.IO) {
+                val t0 = System.currentTimeMillis()
+                val handle = try {
+                    LlamaEngine.nativeLoadModels(
+                        downloader.mmprojFile.absolutePath,
+                        downloader.textModelFile.absolutePath,
+                    )
+                } catch (t: Throwable) {
+                    Log.e("DescribeActivity", "nativeLoadModels threw", t)
+                    0L
+                }
+                val dt = System.currentTimeMillis() - t0
+                LlamaEngineHolder.handle = handle
+                engineStatus = if (handle != 0L)
+                    "Engine: loaded (handle=$handle, ${dt}ms)"
+                else
+                    "Engine: load FAILED (see logcat)"
+                Log.i("DescribeActivity", engineStatus)
+            }
+        }
     }
 
     Scaffold(
@@ -161,6 +199,11 @@ private fun DescribeScreen(sharedImage: Uri?, nativeInfo: String) {
             verticalArrangement = Arrangement.spacedBy(16.dp)
         ) {
             ModelStatusCard(state = downloadState, onRetry = { downloader.startIfPossible() })
+            Text(
+                text = engineStatus,
+                style = MaterialTheme.typography.bodySmall,
+                color = MaterialTheme.colorScheme.onSurfaceVariant
+            )
             if (sharedImage != null) {
                 ImageReceivedContent(sharedImage, nativeInfo)
             } else {
@@ -168,6 +211,16 @@ private fun DescribeScreen(sharedImage: Uri?, nativeInfo: String) {
             }
         }
     }
+}
+
+/**
+ * Process-singleton for the native engine handle so we don't reload
+ * 3.5 GB of weights on every activity recreation or share-target
+ * re-entry. Day-7b will move this to a proper DescribeApplication-
+ * owned object with lifecycle hooks.
+ */
+private object LlamaEngineHolder {
+    @Volatile var handle: Long = 0L
 }
 
 @Composable
