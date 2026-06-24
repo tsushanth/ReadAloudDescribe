@@ -39,9 +39,11 @@ import androidx.compose.ui.unit.dp
 import coil.compose.AsyncImage
 import com.listenai.describe.llama.LlamaEngine
 import com.listenai.describe.model.GgufModelDownloader
+import com.listenai.describe.tts.DescribeTts
 import com.listenai.describe.ui.theme.ReadAloudDescribeTheme
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.withContext
+import androidx.compose.runtime.DisposableEffect
 
 /**
  * The one and only activity. Two entry points:
@@ -172,6 +174,15 @@ private fun DescribeScreen(sharedImage: Uri?, nativeInfo: String) {
     // recomposition so the UI sees the live value.
     var engineHandle by remember { mutableStateOf(LlamaEngineHolder.handle) }
 
+    // TTS engine wrapper. Prefers com.listenai.voice when installed,
+    // falls back to the device's system default. Auto-cleans up when
+    // the activity disposes.
+    val tts = remember { DescribeTts(context) }
+    val ttsState by tts.state.collectAsState()
+    DisposableEffect(Unit) {
+        onDispose { tts.shutdown() }
+    }
+
     // When the downloader settles into Ready, auto-load both models
     // via the JNI bridge on Dispatchers.IO.
     LaunchedEffect(downloadState) {
@@ -245,6 +256,14 @@ private fun DescribeScreen(sharedImage: Uri?, nativeInfo: String) {
         }
     }
 
+    // Auto-speak the description as soon as it's ready. Skip the
+    // error-payload form so users don't hear "(error: ...)" spoken.
+    LaunchedEffect(description) {
+        val text = description ?: return@LaunchedEffect
+        if (text.startsWith("(error:")) return@LaunchedEffect
+        tts.speak(text)
+    }
+
     Scaffold(
         topBar = {
             TopAppBar(title = { Text(stringResource(R.string.app_name)) })
@@ -269,6 +288,9 @@ private fun DescribeScreen(sharedImage: Uri?, nativeInfo: String) {
                     nativeInfo = nativeInfo,
                     description = description,
                     describing = describing,
+                    ttsState = ttsState,
+                    onSpeak = { description?.let { tts.speak(it) } },
+                    onStop = { tts.stop() },
                 )
             } else {
                 EmptyStateContent(nativeInfo)
@@ -372,6 +394,9 @@ private fun ImageReceivedContent(
     nativeInfo: String,
     description: String?,
     describing: Boolean,
+    ttsState: DescribeTts.State,
+    onSpeak: () -> Unit,
+    onStop: () -> Unit,
 ) {
     Column(
         modifier = Modifier.fillMaxWidth(),
@@ -410,6 +435,18 @@ private fun ImageReceivedContent(
                     text = description,
                     style = MaterialTheme.typography.bodyLarge,
                 )
+                // Speak / Stop control. The auto-speak LaunchedEffect
+                // already fired when the description landed; this gives
+                // the user a way to replay or stop.
+                if (ttsState is DescribeTts.State.Speaking) {
+                    Button(onClick = onStop) {
+                        Text("Stop speaking")
+                    }
+                } else if (!description.startsWith("(error:")) {
+                    Button(onClick = onSpeak) {
+                        Text("Read aloud again")
+                    }
+                }
             }
             else -> {
                 Text(
