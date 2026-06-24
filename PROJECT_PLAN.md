@@ -159,10 +159,23 @@ Empty state (app opened directly, no image): `[ Camera ] [ Choose from gallery ]
 | 5 | Repo location | `~/Documents/GitHub/ReadAloudDescribe/` (this repo) |
 | 6 | Pricing | $4.99 one-time, no subscription, no IAP tiers |
 | 7 | Distribution | Play Store Internal → Closed → Open → Production, mirroring ReadAloud Voice rollout |
-| 8 | Inference runtime | ONNX Runtime Android (same as ReadAloud Voice's Kokoro/Piper stack) |
-| 9 | Model source | `Xenova/moondream2` on HuggingFace (prebuilt ONNX exports — no custom export pipeline) |
-| 10 | Quant bundle (v1) | Mixed: `vision_encoder_q4` + `decoder_model_merged_q4f16` + `embed_tokens_int8` ≈ 1.07 GB. Fallback to pure INT8 (~1.78 GB) if quality drops too much. |
-| 11 | Fallback if Moondream2 ONNX path collapses | Older `vikhyatk/moondream1` (same family, smaller) — **not** SmolVLM-500M (empirically ruled out 2026-06-23 for being TalkBack-level generic) |
+| 8 | ~~Inference runtime~~ | ~~ONNX Runtime Android~~ → **llama.cpp Android** (Path-B-killed pivot 2026-06-23 evening) |
+| 9 | ~~Model source~~ | ~~`Xenova/moondream2` ONNX exports~~ → **`ggml-org/moondream2-20250414-GGUF`** (multi-crop baked into the upstream LLaVA pipeline; Xenova exports drop quality because their encoder is single-crop only) |
+| 10 | ~~Quant bundle (v1)~~ | ~~ONNX mixed-quant 1.07 GB~~ → **GGUF Q4_K_M ~1.0-1.3 GB** (locally requantized from upstream F16) |
+| 11 | Fallback if Moondream2 path collapses | Older `vikhyatk/moondream1` (same family, smaller) — **not** SmolVLM-500M (empirically ruled out 2026-06-23 for being TalkBack-level generic) |
+
+### Why we pivoted from ONNX (2026-06-23 evening)
+
+The Xenova ONNX export has two structural problems that together kill Path B (multi-crop in Kotlin against Xenova's vision encoder):
+
+1. **Projection layer is baked into `vision_encoder.onnx`** — output is post-projection (2048-dim decoder embeddings). Moondream2's reference fuses **pre-projection** features (raw SigLIP 768-dim) before a single shared projection pass. Xenova gives us no API to access pre-projection outputs.
+2. **Phi-2 decoder context is 2048 tokens.** 5 crops × 729 vision tokens = 3645, overflows the context. So concat-style multi-crop is impossible; only shape-preserving fusion (mean/pool) is viable.
+
+**Experiment confirmed mean fusion is strictly worse than single-crop** ("John, Sara, David, Emma — friend, friend, friend, friend" instead of the actual UI text). Averaging post-projection features mushes signal instead of adding detail.
+
+llama.cpp + GGUF (Path C) is the way forward. Multi-crop is implemented natively in `llama-mtmd-cli` and the model files exist (`ggml-org/moondream2-20250414-GGUF`). Cost: ~1-2 weeks to wire `llama.android` into the project; slower than ONNX (~12-25 s/query Pixel 9 estimate vs ONNX 3-5 s); larger bundle (1.0-1.3 GB Q4_K_M vs 1.07 GB ONNX). Benefit: reference quality output.
+
+See [`spike_notes/2026-06-23_day2_pathB_killed.md`](./spike_notes/2026-06-23_day2_pathB_killed.md) for the full investigation.
 
 ---
 
