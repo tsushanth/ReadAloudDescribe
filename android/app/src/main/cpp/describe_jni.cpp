@@ -14,6 +14,10 @@
 #include "llama.h"
 #include "ggml.h"
 #include "mtmd.h"
+#include "mtmd-helper.h"
+
+#include <vector>
+#include <chrono>
 
 #define LOGI(...) __android_log_print(ANDROID_LOG_INFO, "describe_jni", __VA_ARGS__)
 #define LOGW(...) __android_log_print(ANDROID_LOG_WARN, "describe_jni", __VA_ARGS__)
@@ -134,4 +138,180 @@ Java_com_listenai_describe_llama_LlamaEngine_nativeFreeModels(
     auto* ctx = reinterpret_cast<DescribeContext*>(handle);
     LOGI("nativeFreeModels handle=%p", (void*)ctx);
     delete ctx;
+}
+
+// ----------------------------------------------------------------
+// Day-7b: describe an image. Takes a jbyteArray containing JPEG/PNG
+// bytes (whatever PIL / stb_image can parse), runs full mtmd
+// tokenize -> eval -> greedy decode, returns the generated string.
+//
+// Blocking. May take 15-60s on Pixel 9 for F16 Moondream2 weights.
+// Caller MUST invoke off the main thread.
+// ----------------------------------------------------------------
+extern "C" JNIEXPORT jstring JNICALL
+Java_com_listenai_describe_llama_LlamaEngine_nativeDescribeImage(
+    JNIEnv* env, jobject /* this */,
+    jlong handle,
+    jbyteArray imageBytes,
+    jstring promptStr,
+    jint maxTokens
+) {
+    if (handle == 0) {
+        return env->NewStringUTF("(error: engine not loaded)");
+    }
+    auto* ctx = reinterpret_cast<DescribeContext*>(handle);
+
+    // Pull the inputs out of Java
+    jsize image_len = env->GetArrayLength(imageBytes);
+    jbyte* image_buf = env->GetByteArrayElements(imageBytes, nullptr);
+    const char* prompt_c = env->GetStringUTFChars(promptStr, nullptr);
+    LOGI("nativeDescribeImage image_bytes=%d prompt=\"%.60s%s\" maxTokens=%d",
+         (int)image_len, prompt_c, strlen(prompt_c) > 60 ? "..." : "", (int)maxTokens);
+
+    auto t_start = std::chrono::steady_clock::now();
+
+    // ---- 1. Build mtmd_bitmap from the JPEG bytes ----
+    auto bitmap_wrap = mtmd_helper_bitmap_init_from_buf(
+        ctx->mtmd,
+        reinterpret_cast<const unsigned char*>(image_buf),
+        image_len,
+        /* placeholder= */ false
+    );
+    if (!bitmap_wrap.bitmap) {
+        env->ReleaseByteArrayElements(imageBytes, image_buf, JNI_ABORT);
+        env->ReleaseStringUTFChars(promptStr, prompt_c);
+        LOGE("mtmd_helper_bitmap_init_from_buf FAILED");
+        return env->NewStringUTF("(error: bad image format)");
+    }
+
+    // ---- 2. Compose prompt with the multimodal marker ----
+    // Moondream2 uses Vicuna chat template. <image> marker tells
+    // mtmd_tokenize where the visual embeddings get inserted.
+    const char * marker = mtmd_default_marker();  // typically "<__media__>"
+    std::string full_prompt;
+    full_prompt += "USER: ";
+    full_prompt += marker;
+    full_prompt += "\n";
+    full_prompt += prompt_c;
+    full_prompt += "\nASSISTANT:";
+
+    mtmd_input_text input_text;
+    input_text.text = full_prompt.c_str();
+    input_text.add_special  = true;
+    input_text.parse_special = true;
+
+    // ---- 3. Tokenize prompt+image into chunks ----
+    mtmd_input_chunks * chunks = mtmd_input_chunks_init();
+    const mtmd_bitmap * bitmaps[1] = { bitmap_wrap.bitmap };
+
+    int32_t tok_rc = mtmd_tokenize(ctx->mtmd, chunks, &input_text, bitmaps, 1);
+    if (tok_rc != 0) {
+        mtmd_input_chunks_free(chunks);
+        mtmd_bitmap_free(bitmap_wrap.bitmap);
+        env->ReleaseByteArrayElements(imageBytes, image_buf, JNI_ABORT);
+        env->ReleaseStringUTFChars(promptStr, prompt_c);
+        LOGE("mtmd_tokenize failed rc=%d", tok_rc);
+        char buf[64];
+        snprintf(buf, sizeof(buf), "(error: tokenize rc=%d)", tok_rc);
+        return env->NewStringUTF(buf);
+    }
+    auto t_after_tokenize = std::chrono::steady_clock::now();
+    LOGI("mtmd_tokenize done in %lldms, n_chunks=%zu",
+         (long long)std::chrono::duration_cast<std::chrono::milliseconds>(t_after_tokenize - t_start).count(),
+         mtmd_input_chunks_size(chunks));
+
+    // ---- 4. Reset KV cache + run prefill via mtmd_helper_eval_chunks ----
+    // Memory clear is a fresh prompt per call. For multi-turn we'd track
+    // n_past; not needed for single-shot describe.
+    llama_memory_clear(llama_get_memory(ctx->lctx), true);
+
+    llama_pos n_past_out = 0;
+    int32_t eval_rc = mtmd_helper_eval_chunks(
+        ctx->mtmd, ctx->lctx, chunks,
+        /* n_past= */ 0,
+        /* seq_id= */ 0,
+        /* n_batch= */ 512,
+        /* logits_last= */ true,
+        &n_past_out
+    );
+    if (eval_rc != 0) {
+        mtmd_input_chunks_free(chunks);
+        mtmd_bitmap_free(bitmap_wrap.bitmap);
+        env->ReleaseByteArrayElements(imageBytes, image_buf, JNI_ABORT);
+        env->ReleaseStringUTFChars(promptStr, prompt_c);
+        LOGE("mtmd_helper_eval_chunks failed rc=%d", eval_rc);
+        char buf[64];
+        snprintf(buf, sizeof(buf), "(error: eval rc=%d)", eval_rc);
+        return env->NewStringUTF(buf);
+    }
+    auto t_after_eval = std::chrono::steady_clock::now();
+    LOGI("mtmd_helper_eval_chunks done in %lldms, n_past=%d",
+         (long long)std::chrono::duration_cast<std::chrono::milliseconds>(t_after_eval - t_after_tokenize).count(),
+         (int)n_past_out);
+
+    // ---- 5. Greedy decode loop ----
+    const llama_model * model = llama_get_model(ctx->lctx);
+    const llama_vocab * vocab = llama_model_get_vocab(model);
+    const llama_token eos     = llama_vocab_eos(vocab);
+
+    llama_batch batch = llama_batch_init(/* n_tokens= */ 1, /* embd= */ 0, /* n_seq_max= */ 1);
+
+    std::string result;
+    result.reserve(2048);
+
+    int generated = 0;
+    for (int step = 0; step < (int)maxTokens; ++step) {
+        // Argmax over the last logits row
+        const float * logits = llama_get_logits_ith(ctx->lctx, -1);
+        if (!logits) {
+            LOGE("llama_get_logits_ith returned null at step %d", step);
+            break;
+        }
+        const int32_t n_vocab = llama_vocab_n_tokens(vocab);
+        int best = 0;
+        float best_l = logits[0];
+        for (int i = 1; i < n_vocab; ++i) {
+            if (logits[i] > best_l) { best_l = logits[i]; best = i; }
+        }
+        const llama_token next = (llama_token)best;
+        if (next == eos) {
+            LOGI("EOS at step %d", step);
+            break;
+        }
+        generated++;
+
+        // Append token's piece to the result string
+        char piece[64];
+        int n_chars = llama_token_to_piece(vocab, next, piece, sizeof(piece), 0, false);
+        if (n_chars > 0) {
+            result.append(piece, n_chars);
+        }
+
+        // Feed the new token back for the next step
+        batch.n_tokens   = 1;
+        batch.token[0]   = next;
+        batch.pos[0]     = n_past_out;
+        batch.n_seq_id[0]= 1;
+        batch.seq_id[0][0] = 0;
+        batch.logits[0]  = 1;
+        if (llama_decode(ctx->lctx, batch) != 0) {
+            LOGE("llama_decode failed at step %d", step);
+            break;
+        }
+        n_past_out += 1;
+    }
+
+    llama_batch_free(batch);
+    mtmd_input_chunks_free(chunks);
+    mtmd_bitmap_free(bitmap_wrap.bitmap);
+    env->ReleaseByteArrayElements(imageBytes, image_buf, JNI_ABORT);
+    env->ReleaseStringUTFChars(promptStr, prompt_c);
+
+    auto t_end = std::chrono::steady_clock::now();
+    long long total_ms = std::chrono::duration_cast<std::chrono::milliseconds>(t_end - t_start).count();
+    long long decode_ms = std::chrono::duration_cast<std::chrono::milliseconds>(t_end - t_after_eval).count();
+    LOGI("nativeDescribeImage done: %d tokens in %lldms total (%lldms decode), result_chars=%zu",
+         generated, total_ms, decode_ms, result.size());
+
+    return env->NewStringUTF(result.c_str());
 }

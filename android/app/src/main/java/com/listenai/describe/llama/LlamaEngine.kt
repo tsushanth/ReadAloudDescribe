@@ -54,4 +54,26 @@ object LlamaEngine {
      * the handle is invalid — using it again is a use-after-free.
      */
     external fun nativeFreeModels(handle: Long)
+
+    /**
+     * Describe the image bytes (JPEG/PNG/etc — anything stb_image can
+     * parse) using the loaded mtmd + decoder. Blocking; takes 15-60 s
+     * on Pixel 9 for F16 Moondream2. MUST be called off the main
+     * thread.
+     *
+     * @param handle the value returned by nativeLoadModels
+     * @param imageBytes raw image bytes (read from the URI in Kotlin)
+     * @param prompt the user-facing question (the mtmd prompt template
+     *               wraps this with USER:/<image>/ASSISTANT: in C++)
+     * @param maxTokens hard cap on generated tokens (decoder also stops
+     *                  on EOS)
+     * @return the generated description text, or an error string
+     *         starting with "(error:" for any failure
+     */
+    external fun nativeDescribeImage(
+        handle: Long,
+        imageBytes: ByteArray,
+        prompt: String,
+        maxTokens: Int,
+    ): String
 }

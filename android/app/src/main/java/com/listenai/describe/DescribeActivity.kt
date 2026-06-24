@@ -146,10 +146,19 @@ private fun DescribeScreen(sharedImage: Uri?, nativeInfo: String) {
     val downloader = remember { GgufModelDownloader.getInstance(context) }
     val downloadState by downloader.state.collectAsState()
 
-    // Engine-load state. Day-7a: just track loaded/not-loaded as a
-    // String for visibility. Day-7b will swap to a proper sealed
-    // class once we add nativeDescribeImage on top.
-    var engineStatus by remember { mutableStateOf("Engine: not loaded") }
+    // Engine-load state. Initialize from the process-singleton so the
+    // label is honest after an activity re-entry (e.g. Photos share)
+    // when the engine is already loaded in our long-lived process.
+    var engineStatus by remember {
+        mutableStateOf(
+            if (LlamaEngineHolder.handle != 0L) "Engine: ready" else "Engine: not loaded"
+        )
+    }
+
+    // Description state. null = nothing yet, non-null = either the
+    // generated description or an "(error: …)" payload from JNI.
+    var description by remember { mutableStateOf<String?>(null) }
+    var describing by remember { mutableStateOf(false) }
 
     // Auto-trigger on first composition. Idempotent — the orchestrator
     // returns immediately if the models are already on disk.
@@ -157,12 +166,16 @@ private fun DescribeScreen(sharedImage: Uri?, nativeInfo: String) {
         downloader.startIfPossible()
     }
 
+    // Engine handle as a Compose state so LaunchedEffect can key on
+    // it. The process-singleton (LlamaEngineHolder) is just a survivor
+    // across activity recreations; we copy it into local state on
+    // recomposition so the UI sees the live value.
+    var engineHandle by remember { mutableStateOf(LlamaEngineHolder.handle) }
+
     // When the downloader settles into Ready, auto-load both models
-    // via the JNI bridge on Dispatchers.IO. We hold the resulting
-    // handle in a process-singleton (LlamaEngineHolder) so it survives
-    // configuration changes + share-target re-entries.
+    // via the JNI bridge on Dispatchers.IO.
     LaunchedEffect(downloadState) {
-        if (downloadState is GgufModelDownloader.State.Ready && LlamaEngineHolder.handle == 0L) {
+        if (downloadState is GgufModelDownloader.State.Ready && engineHandle == 0L) {
             engineStatus = "Loading engine…"
             withContext(Dispatchers.IO) {
                 val t0 = System.currentTimeMillis()
@@ -177,12 +190,58 @@ private fun DescribeScreen(sharedImage: Uri?, nativeInfo: String) {
                 }
                 val dt = System.currentTimeMillis() - t0
                 LlamaEngineHolder.handle = handle
+                engineHandle = handle           // triggers the describe LaunchedEffect
                 engineStatus = if (handle != 0L)
                     "Engine: loaded (handle=$handle, ${dt}ms)"
                 else
                     "Engine: load FAILED (see logcat)"
                 Log.i("DescribeActivity", engineStatus)
             }
+        }
+    }
+
+    // When a shared image arrives AND the engine is loaded, auto-call
+    // nativeDescribeImage on a background coroutine. Reads the URI's
+    // bytes via ContentResolver, hands them to JNI.
+    LaunchedEffect(sharedImage, engineHandle) {
+        val uri = sharedImage ?: return@LaunchedEffect
+        if (engineHandle == 0L) return@LaunchedEffect
+        if (describing) return@LaunchedEffect
+
+        describing = true
+        description = null
+        Log.i("DescribeActivity", "auto-describe firing for $uri (handle=$engineHandle)")
+
+        withContext(Dispatchers.IO) {
+            val bytes = try {
+                context.contentResolver.openInputStream(uri)?.use { it.readBytes() }
+                    ?: ByteArray(0)
+            } catch (t: Throwable) {
+                Log.e("DescribeActivity", "failed to read image bytes from $uri", t)
+                ByteArray(0)
+            }
+            if (bytes.isEmpty()) {
+                description = "(error: couldn't read image — adb-test paths need real Photos share to grant URI permission)"
+                describing = false
+                return@withContext
+            }
+            Log.i("DescribeActivity", "image read: ${bytes.size} bytes, calling nativeDescribeImage")
+            val t0 = System.currentTimeMillis()
+            val text = try {
+                LlamaEngine.nativeDescribeImage(
+                    handle = engineHandle,
+                    imageBytes = bytes,
+                    prompt = "Describe this image in detail for someone who cannot see it.",
+                    maxTokens = 200,
+                )
+            } catch (t: Throwable) {
+                Log.e("DescribeActivity", "nativeDescribeImage threw", t)
+                "(error: ${t.javaClass.simpleName})"
+            }
+            val dt = System.currentTimeMillis() - t0
+            Log.i("DescribeActivity", "describe done in ${dt}ms, len=${text.length}")
+            description = text
+            describing = false
         }
     }
 
@@ -205,7 +264,12 @@ private fun DescribeScreen(sharedImage: Uri?, nativeInfo: String) {
                 color = MaterialTheme.colorScheme.onSurfaceVariant
             )
             if (sharedImage != null) {
-                ImageReceivedContent(sharedImage, nativeInfo)
+                ImageReceivedContent(
+                    uri = sharedImage,
+                    nativeInfo = nativeInfo,
+                    description = description,
+                    describing = describing,
+                )
             } else {
                 EmptyStateContent(nativeInfo)
             }
@@ -303,7 +367,12 @@ private fun ModelStatusCard(
 }
 
 @Composable
-private fun ImageReceivedContent(uri: Uri, nativeInfo: String) {
+private fun ImageReceivedContent(
+    uri: Uri,
+    nativeInfo: String,
+    description: String?,
+    describing: Boolean,
+) {
     Column(
         modifier = Modifier.fillMaxWidth(),
         verticalArrangement = Arrangement.spacedBy(16.dp),
@@ -324,15 +393,33 @@ private fun ImageReceivedContent(uri: Uri, nativeInfo: String) {
                 )
             },
         )
-        Text(
-            text = stringResource(R.string.placeholder_describe_pending),
-            style = MaterialTheme.typography.bodyLarge
-        )
-        Text(
-            text = "URI: $uri",
-            style = MaterialTheme.typography.bodySmall,
-            color = MaterialTheme.colorScheme.onSurfaceVariant
-        )
+        // Description surface — three states from the user's POV:
+        // 1. describing == true  → "Describing image…" + progress spinner cue
+        // 2. description != null → render it (or render the "(error:…)" payload)
+        // 3. else (engine still loading or models missing) → placeholder
+        when {
+            describing -> {
+                Text(
+                    text = "Describing image…",
+                    style = MaterialTheme.typography.bodyLarge,
+                    color = MaterialTheme.colorScheme.primary,
+                )
+            }
+            description != null -> {
+                Text(
+                    text = description,
+                    style = MaterialTheme.typography.bodyLarge,
+                )
+            }
+            else -> {
+                Text(
+                    text = stringResource(R.string.placeholder_describe_pending),
+                    style = MaterialTheme.typography.bodyLarge,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant,
+                )
+            }
+        }
+        // Diagnostics row — kept until Day-8 polish removes it.
         Text(
             text = nativeInfo,
             style = MaterialTheme.typography.bodySmall,
