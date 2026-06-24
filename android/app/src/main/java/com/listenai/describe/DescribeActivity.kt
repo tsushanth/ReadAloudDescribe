@@ -337,7 +337,7 @@ private fun ModelStatusCard(
                         style = MaterialTheme.typography.titleMedium
                     )
                     Text(
-                        text = "Required to describe images. ~3.5 GB, downloads on Wi-Fi only.",
+                        text = "Required to describe images. ~1.9 GB, downloads on Wi-Fi only.",
                         style = MaterialTheme.typography.bodyMedium
                     )
                     Button(onClick = onRetry) {

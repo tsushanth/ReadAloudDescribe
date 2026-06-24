@@ -72,7 +72,7 @@ class GgufModelDownloader private constructor(
 
         Log.i(TAG, "startIfPossible: enqueuing GgufDownloadWorker (unmetered)")
         // For now: Wi-Fi only. No allow-cellular pref yet; users won't
-        // want to download 3.5 GB over LTE accidentally. Add a settings
+        // want to download 1.9 GB over LTE accidentally. Add a settings
         // toggle in Day 8 once the rest of the app works.
         val constraints = Constraints.Builder()
             .setRequiredNetworkType(NetworkType.UNMETERED)
@@ -162,7 +162,7 @@ class GgufModelDownloader private constructor(
          */
         private fun currentWaitReason(context: Context): String {
             if (!isOnUnmeteredNetwork(context)) {
-                return "Waiting for Wi-Fi — the 3.5 GB voice model will download as soon as you connect."
+                return "Waiting for Wi-Fi — the 1.9 GB voice model will download as soon as you connect."
             }
             val bm = context.getSystemService(Context.BATTERY_SERVICE)
                 as? android.os.BatteryManager

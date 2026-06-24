@@ -47,14 +47,14 @@ class GgufDownloadWorker(
                     url = MMPROJ_URL,
                     fileName = MMPROJ_FILE_NAME,
                     expectedMinBytes = 800L * 1024 * 1024,    // ~868MB; allow 800MB minimum
-                    expectedMaxBytes = 1200L * 1024 * 1024,   // ~1.2GB ceiling for sanity
+                    expectedMaxBytes = 1200L * 1024 * 1024,
                     label = "Vision model",
                 ),
                 FileTarget(
                     url = TEXT_MODEL_URL,
                     fileName = TEXT_MODEL_FILE_NAME,
-                    expectedMinBytes = 2500L * 1024 * 1024,   // ~2.6GB F16
-                    expectedMaxBytes = 3500L * 1024 * 1024,
+                    expectedMinBytes = 900L * 1024 * 1024,    // ~991MB Q5_K_M
+                    expectedMaxBytes = 1200L * 1024 * 1024,
                     label = "Language model",
                 ),
             )
@@ -259,18 +259,20 @@ class GgufDownloadWorker(
         const val CHANNEL_ID = "describe_gguf_download"
         const val NOTIFICATION_ID = 0x44D1  // arbitrary; "DD" for Describe Download
 
-        // Day-6 URLs: official moondream/moondream2-gguf F16 release.
-        // Total ~3.5 GB. Day-7 swaps the text-model URL to a Q5_K_M
-        // variant we'll quantize locally + host elsewhere (HF personal
-        // repo, Cloudflare R2, or GitHub release) to drop the bundle
-        // to ~1.86 GB.
+        // Day-8 URLs: vendored to a GitHub release on this repo for
+        // stability + smaller bundle. Q5_K_M text-model was the Day-3
+        // sweet-spot pick (half the size of F16, no hallucinated text
+        // specifics — Q4_K_M was disqualified for fabricating names).
+        // mmproj F16 is the upstream file mirrored verbatim so both
+        // files are in one place under our control. Total ~1.86 GB
+        // (down from 3.5 GB).
         const val MMPROJ_URL =
-            "https://huggingface.co/moondream/moondream2-gguf/resolve/main/moondream2-mmproj-f16.gguf"
+            "https://github.com/tsushanth/ReadAloudDescribe/releases/download/v0.1.0-models/moondream2-mmproj-f16.gguf"
         const val TEXT_MODEL_URL =
-            "https://huggingface.co/moondream/moondream2-gguf/resolve/main/moondream2-text-model-f16.gguf"
+            "https://github.com/tsushanth/ReadAloudDescribe/releases/download/v0.1.0-models/moondream2-text-model-Q5_K_M.gguf"
 
         const val MMPROJ_FILE_NAME = "moondream2-mmproj-f16.gguf"
-        const val TEXT_MODEL_FILE_NAME = "moondream2-text-model-f16.gguf"
+        const val TEXT_MODEL_FILE_NAME = "moondream2-text-model-Q5_K_M.gguf"
 
         // Output keys for setProgress() — read by GgufModelDownloader
         // via WorkInfo.progress.
@@ -282,6 +284,6 @@ class GgufDownloadWorker(
         const val KEY_FILE_LABEL = "file_label"
         const val KEY_ERROR = "error"
 
-        const val ESTIMATED_TOTAL_MB = 3500
+        const val ESTIMATED_TOTAL_MB = 1860
     }
 }
