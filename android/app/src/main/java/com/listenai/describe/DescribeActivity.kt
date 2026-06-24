@@ -220,12 +220,13 @@ private fun DescribeScreen(sharedImage: Uri?, nativeInfo: String) {
     }
 
     // When a shared image arrives AND the engine is loaded, auto-call
-    // the STREAMING describe path on a background coroutine. Reads the
-    // URI's bytes via ContentResolver, then receives tokens one at a
-    // time via the JNI callback. Each sentence (terminated by .?!) is
-    // flushed to TTS via speakChunkAppend so playback starts ~15-20s
-    // in (after the first sentence) instead of after the full ~70-80s
-    // decode.
+    // the STREAMING describe path on a background coroutine. Tokens
+    // stream into the UI live as they're generated, but TTS waits for
+    // the FULL description before speaking — per-sentence chunked TTS
+    // produced audible mid-word cuts at utterance boundaries on Samsung
+    // (queued tts.speak() calls have tiny gaps that sound like word
+    // splits). Trade: lose ~17s time-to-first-audio, gain natural
+    // continuous speech.
     LaunchedEffect(sharedImage, engineHandle) {
         val uri = sharedImage ?: return@LaunchedEffect
         if (engineHandle == 0L) return@LaunchedEffect
@@ -251,47 +252,43 @@ private fun DescribeScreen(sharedImage: Uri?, nativeInfo: String) {
             Log.i("DescribeActivity", "image read: ${bytes.size} bytes, calling nativeDescribeImageStream")
 
             val accumulated = StringBuilder(2048)
-            val ttsBuffer = StringBuilder(256)
-            var firstChunkSent = false
             val tokensDone = kotlinx.coroutines.CompletableDeferred<Int>()
 
             val callback = object : LlamaEngine.DescribeCallback {
                 override fun onToken(piece: String) {
                     accumulated.append(piece)
-                    ttsBuffer.append(piece)
-
-                    // Sentence-boundary flush: when ttsBuffer ends in
-                    // .?!, send it to TTS + clear. Keeps speech
-                    // natural-sounding (TTS works best on whole
-                    // sentences with proper prosody).
-                    val last = ttsBuffer.lastOrNull()
-                    if (last != null && last in ".!?" && ttsBuffer.length > 10) {
-                        val sentence = ttsBuffer.toString().trim()
-                        ttsBuffer.clear()
-                        // Hop to main thread for the TTS call —
-                        // android.speech.tts requires main-thread invoke.
-                        scope.launch(Dispatchers.Main) {
-                            if (!firstChunkSent) {
-                                tts.speakChunkFirst(sentence)
-                                firstChunkSent = true
-                            } else {
-                                tts.speakChunkAppend(sentence)
-                            }
-                        }
-                    }
-                    // Live UI update — also marshal to main.
+                    // Live UI update — user watches text grow as tokens
+                    // arrive. Marshal to main thread.
                     scope.launch(Dispatchers.Main) {
                         description = accumulated.toString()
                     }
                 }
                 override fun onComplete(generated: Int) {
-                    // Flush any trailing buffer that didn't end on .?!
-                    if (ttsBuffer.isNotBlank()) {
-                        val tail = ttsBuffer.toString().trim()
-                        ttsBuffer.clear()
+                    val finalText = accumulated.toString().trim()
+                    // Diagnostic: dump the full text as hex so we can
+                    // see any zero-width / non-breaking / control chars
+                    // that might be making TTS phonemizers stutter.
+                    val hex = finalText.map { ch ->
+                        if (ch in ' '..'~') ch.toString()
+                        else "[U+%04X]".format(ch.code)
+                    }.joinToString("")
+                    Log.i("DescribeActivity", "describe text hex-dump: $hex")
+                    // Sanitize: collapse weird whitespace + strip control
+                    // chars before handing to TTS. Phi-2 byte-BPE
+                    // sometimes emits NBSP / zero-width chars that
+                    // confuse TTS phonemizers into spelling words letter
+                    // by letter (e.g. "exp" + NBSP + "ression").
+                    val sanitized = finalText
+                        .replace(Regex("[\\u00A0\\u2000-\\u200F\\u202F\\u205F\\u3000]"), " ")
+                        .replace(Regex("[\\p{Cntrl}&&[^\\n\\r\\t]]"), "")
+                        .replace(Regex("\\s+"), " ")
+                        .trim()
+                    if (sanitized != finalText) {
+                        Log.i("DescribeActivity", "sanitized: ${sanitized.length} chars (was ${finalText.length})")
+                    }
+                    if (sanitized.isNotBlank()) {
                         scope.launch(Dispatchers.Main) {
-                            if (!firstChunkSent) tts.speakChunkFirst(tail)
-                            else tts.speakChunkAppend(tail)
+                            tts.speak(sanitized)
                         }
                     }
                     tokensDone.complete(generated)

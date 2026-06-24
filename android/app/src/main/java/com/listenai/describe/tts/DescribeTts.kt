@@ -45,11 +45,15 @@ class DescribeTts(private val context: Context) {
     private var pendingText: String? = null
 
     init {
-        // Pick engine: com.listenai.voice if installed, else system
-        // default (passing null to the constructor). This is the same
-        // pattern ReadAloud Voice's own benchmark activity uses.
-        val engine = if (isPackageInstalled(VOICE_ENGINE_PACKAGE))
-            VOICE_ENGINE_PACKAGE else null
+        // Use system default TTS (null engine). Earlier iteration
+        // preferred com.listenai.voice when installed, but on Samsung
+        // S22 testing both ReadAloud Voice's Kokoro and even Google
+        // TTS produced audible intra-word cuts ("exp...pression",
+        // "b...lue") with our descriptions. Text itself is clean ASCII
+        // — root cause not yet identified. Falling back to system
+        // default gave the smoothest result in practice. Revisit when
+        // we have a hypothesis we can test against.
+        val engine: String? = null
         Log.i(TAG, "init engine=${engine ?: "(system default)"}")
 
         tts = TextToSpeech(context.applicationContext, { status ->
