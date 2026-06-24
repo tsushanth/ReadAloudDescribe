@@ -1,0 +1,8 @@
+<?xml version="1.0" encoding="utf-8"?>
+<resources>
+    <string name="app_name">ReadAloud Describe</string>
+    <string name="share_target_label">Describe with ReadAloud</string>
+    <string name="empty_state_share_hint">Share an image to ReadAloud Describe from any app — Photos, Gmail, Chrome — to hear a description.</string>
+    <string name="shared_image_content_description">The image you shared</string>
+    <string name="placeholder_describe_pending">(Description goes here — Day 7 wires up llama.cpp inference.)</string>
+</resources>

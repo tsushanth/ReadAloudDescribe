@@ -1,0 +1,7 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!-- Placeholder solid-color background. Real icon comes in Day-8 Play
+     Store prep, designed by Recraft like the voice flavor was. -->
+<shape xmlns:android="http://schemas.android.com/apk/res/android"
+    android:shape="rectangle">
+    <solid android:color="#0B5394" />
+</shape>

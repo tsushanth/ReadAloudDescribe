@@ -1,0 +1,12 @@
+<?xml version="1.0" encoding="utf-8"?>
+<resources>
+    <!-- App theme is Compose-driven (see ui/theme/Theme.kt). This XML
+         theme exists so the manifest's android:theme reference resolves
+         + the system uses the right window background until Compose mounts.
+         Material3.DayNight gives a clean transition. -->
+    <!-- AppCompat parent: pulls in only what we already depend on
+         (androidx.appcompat). The visual rendering is Compose-driven,
+         so this XML theme just gives the system the right window
+         background until Compose mounts. -->
+    <style name="Theme.ReadAloudDescribe" parent="Theme.AppCompat.DayNight.NoActionBar" />
+</resources>

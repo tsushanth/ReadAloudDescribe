@@ -1,0 +1,55 @@
+<?xml version="1.0" encoding="utf-8"?>
+<manifest xmlns:android="http://schemas.android.com/apk/res/android">
+
+    <!-- INTERNET only needed by the GGUF model downloader (Day 6+).
+         Inference itself is fully offline. -->
+    <uses-permission android:name="android.permission.INTERNET" />
+    <uses-permission android:name="android.permission.ACCESS_NETWORK_STATE" />
+
+    <!-- For the in-app camera flow (also Day 6+) -->
+    <uses-feature
+        android:name="android.hardware.camera"
+        android:required="false" />
+
+    <application
+        android:name=".DescribeApplication"
+        android:allowBackup="true"
+        android:icon="@mipmap/ic_launcher"
+        android:label="@string/app_name"
+        android:supportsRtl="true"
+        android:theme="@style/Theme.ReadAloudDescribe">
+
+        <activity
+            android:name=".DescribeActivity"
+            android:exported="true"
+            android:label="@string/app_name"
+            android:theme="@style/Theme.ReadAloudDescribe">
+
+            <!-- Launcher entry point — the only activity in this app. -->
+            <intent-filter>
+                <action android:name="android.intent.action.MAIN" />
+                <category android:name="android.intent.category.LAUNCHER" />
+            </intent-filter>
+
+            <!-- Receive an image shared from another app (Photos, Gmail,
+                 Chrome, etc.). This is the primary entry-point shape:
+                 user is reading something elsewhere, hits Share, picks
+                 ReadAloud Describe, gets a description read out loud. -->
+            <intent-filter android:label="@string/share_target_label">
+                <action android:name="android.intent.action.SEND" />
+                <category android:name="android.intent.category.DEFAULT" />
+                <data android:mimeType="image/*" />
+            </intent-filter>
+
+            <!-- Also accept multiple images, though v1 only describes the
+                 first one. Future iteration: describe each in turn. -->
+            <intent-filter android:label="@string/share_target_label">
+                <action android:name="android.intent.action.SEND_MULTIPLE" />
+                <category android:name="android.intent.category.DEFAULT" />
+                <data android:mimeType="image/*" />
+            </intent-filter>
+        </activity>
+
+    </application>
+
+</manifest>
