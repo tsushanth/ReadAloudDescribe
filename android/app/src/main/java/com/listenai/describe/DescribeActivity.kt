@@ -13,6 +13,7 @@ import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.PaddingValues
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
+import androidx.compose.foundation.layout.heightIn
 import androidx.compose.foundation.layout.padding
 import androidx.compose.material3.ExperimentalMaterial3Api
 import androidx.compose.material3.MaterialTheme
@@ -131,10 +132,25 @@ private fun ImageReceivedContent(uri: Uri, padding: PaddingValues) {
         verticalArrangement = Arrangement.spacedBy(16.dp),
         horizontalAlignment = Alignment.CenterHorizontally
     ) {
+        // Cap AsyncImage height — without an explicit constraint, its
+        // intrinsic measurement (especially while the bitmap is still
+        // loading) can blow past the column's bounds and hide the text
+        // below it. Caught on Day-4 first Pixel render. ContentScale.Fit
+        // so portrait images don't crop.
         AsyncImage(
             model = uri,
             contentDescription = stringResource(R.string.shared_image_content_description),
-            modifier = Modifier.fillMaxWidth()
+            contentScale = androidx.compose.ui.layout.ContentScale.Fit,
+            modifier = Modifier
+                .fillMaxWidth()
+                .heightIn(max = 300.dp),
+            onError = { state ->
+                android.util.Log.e(
+                    "DescribeActivity",
+                    "Coil failed to load $uri: ${state.result.throwable.message}",
+                    state.result.throwable
+                )
+            },
         )
         Text(
             text = stringResource(R.string.placeholder_describe_pending),

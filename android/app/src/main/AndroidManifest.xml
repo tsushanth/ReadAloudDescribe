@@ -23,6 +23,7 @@
             android:name=".DescribeActivity"
             android:exported="true"
             android:label="@string/app_name"
+            android:launchMode="singleTop"
             android:theme="@style/Theme.ReadAloudDescribe">
 
             <!-- Launcher entry point — the only activity in this app. -->
