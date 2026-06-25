@@ -93,8 +93,15 @@ Java_com_listenai_describe_llama_LlamaEngine_nativeLoadModels(
     cparams.n_ctx      = 2048;  // Phi-2 max; mtmd will tell us if image needs more
     cparams.n_batch    = 512;
     cparams.n_ubatch   = 512;
-    cparams.n_threads  = 4;     // tune in Day 7b after first run
-    cparams.n_threads_batch = 4;
+    // Galaxy S22 has 1 Cortex-X2 + 3 A710 + 4 A510 (8 cores). 4 threads
+    // (the v0.1.1 setting) leaves the 3 A710 big cores under-subscribed;
+    // 8 over-subscribes because the A510 efficiency cores fight for
+    // memory bandwidth. 6 lines up with X2 + 3×A710 + 2×A510, which is
+    // the topology llama.cpp's CPU sched prefers for memory-bound decode.
+    // Empirically validate by reading the "tokens in Xms" log after first
+    // describe; revert if no improvement.
+    cparams.n_threads  = 6;
+    cparams.n_threads_batch = 6;
 
     ctx->lctx = llama_init_from_model(ctx->model, cparams);
     if (!ctx->lctx) {
@@ -110,7 +117,7 @@ Java_com_listenai_describe_llama_LlamaEngine_nativeLoadModels(
     mtmd_context_params vparams = mtmd_context_params_default();
     vparams.use_gpu        = false;
     vparams.print_timings  = false;
-    vparams.n_threads      = 4;
+    vparams.n_threads      = 6;  // match the text-decode setting; vision prefill is bandwidth-bound too
     vparams.warmup         = false;
 
     ctx->mtmd = mtmd_init_from_file(mmproj_c, ctx->model, vparams);

@@ -237,15 +237,28 @@ private fun DescribeScreen(sharedImage: Uri?, nativeInfo: String) {
         Log.i("DescribeActivity", "auto-describe firing for $uri (handle=$engineHandle)")
 
         withContext(Dispatchers.IO) {
+            var readError: Throwable? = null
             val bytes = try {
                 context.contentResolver.openInputStream(uri)?.use { it.readBytes() }
                     ?: ByteArray(0)
             } catch (t: Throwable) {
                 Log.e("DescribeActivity", "failed to read image bytes from $uri", t)
+                readError = t
                 ByteArray(0)
             }
             if (bytes.isEmpty()) {
-                description = "(error: couldn't read image)"
+                // file:// URIs from some 3rd-party galleries fail with
+                // EACCES on Android 10+ scoped storage. Tell the user to
+                // re-share from a modern app (Photos, Files) instead of
+                // a generic "couldn't read" that gives them no path
+                // forward. content:// URIs from Photos/Files arrive with
+                // built-in temp-read permission and just work.
+                description = if (uri.scheme == "file" ||
+                    readError?.cause is android.system.ErrnoException) {
+                    "Couldn't open this image. Try sharing it again from Photos or Files — some gallery apps use a format Android won't let us open."
+                } else {
+                    "(error: couldn't read image)"
+                }
                 describing = false
                 return@withContext
             }
@@ -307,8 +320,17 @@ private fun DescribeScreen(sharedImage: Uri?, nativeInfo: String) {
                 LlamaEngine.nativeDescribeImageStream(
                     handle = engineHandle,
                     imageBytes = bytes,
-                    prompt = "Describe this image in detail for someone who cannot see it.",
-                    maxTokens = 200,
+                    // Concise prompt (v0.1.2): the v0.1.1 prompt asked for
+                    // "in detail" descriptions that Moondream2 at Q5_K_M
+                    // routinely padded with plausible-but-absent objects
+                    // (Warren's "white phone + green mouse" feedback).
+                    // First attempt added an "I am not sure" escape clause
+                    // — model collapsed and returned that on every photo.
+                    // This version keeps Moondream's natural caption mode
+                    // but caps it short, so it has less rope to hang
+                    // itself with. maxTokens 200 → 120 is a hard ceiling.
+                    prompt = "Briefly describe what you see in this image in 1 or 2 sentences.",
+                    maxTokens = 120,
                     callback = callback,
                 )
             } catch (t: Throwable) {
