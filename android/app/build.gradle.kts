@@ -22,8 +22,8 @@ android {
         applicationId = "com.listenai.describe"
         minSdk = 26
         targetSdk = 35
-        versionCode = 4
-        versionName = "0.1.2"
+        versionCode = 5
+        versionName = "0.2.0"
 
         // arm64-v8a only for now — Day-5+ ships native llama.cpp .so files
         // and we don't intend to support x86 emulators. Matches ReadAloud

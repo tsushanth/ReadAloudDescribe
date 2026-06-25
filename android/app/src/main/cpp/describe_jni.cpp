@@ -90,7 +90,7 @@ Java_com_listenai_describe_llama_LlamaEngine_nativeLoadModels(
 
     // ---- context for inference ----
     llama_context_params cparams = llama_context_default_params();
-    cparams.n_ctx      = 2048;  // Phi-2 max; mtmd will tell us if image needs more
+    cparams.n_ctx      = 4096;  // SmolVLM2 image-splitting can multiply vision tokens; 4k leaves headroom
     cparams.n_batch    = 512;
     cparams.n_ubatch   = 512;
     // Galaxy S22 has 1 Cortex-X2 + 3 A710 + 4 A510 (8 cores). 4 threads
@@ -155,13 +155,42 @@ Java_com_listenai_describe_llama_LlamaEngine_nativeFreeModels(
 // Blocking. May take 15-60s on Pixel 9 for F16 Moondream2 weights.
 // Caller MUST invoke off the main thread.
 // ----------------------------------------------------------------
+// Compose the wrapping chat template per model. mtmd_default_marker()
+// returns "<__media__>" regardless of loaded model; mtmd substitutes
+// the right embeddings during tokenize. Only the wrapping text differs.
+//   "vicuna" (Moondream2):   "USER: <__media__>\n{prompt}\nASSISTANT:"
+//   "smolvlm" (SmolVLM2):    "<|im_start|>User:<__media__>\n{prompt}<end_of_utterance>\nAssistant:"
+// Default to "smolvlm" — it's the safer fallback for an unknown value
+// since the SmolVLM2 build is the one this code path was designed
+// around going forward.
+static std::string compose_chat_prompt(const char* template_c, const char* prompt_c) {
+    const char* marker = mtmd_default_marker();
+    std::string out;
+    if (template_c && std::string(template_c) == "vicuna") {
+        out += "USER: ";
+        out += marker;
+        out += "\n";
+        out += prompt_c;
+        out += "\nASSISTANT:";
+    } else {
+        // smolvlm (default)
+        out += "<|im_start|>User:";
+        out += marker;
+        out += "\n";
+        out += prompt_c;
+        out += "<end_of_utterance>\nAssistant:";
+    }
+    return out;
+}
+
 extern "C" JNIEXPORT jstring JNICALL
 Java_com_listenai_describe_llama_LlamaEngine_nativeDescribeImage(
     JNIEnv* env, jobject /* this */,
     jlong handle,
     jbyteArray imageBytes,
     jstring promptStr,
-    jint maxTokens
+    jint maxTokens,
+    jstring chatTemplateStr
 ) {
     if (handle == 0) {
         return env->NewStringUTF("(error: engine not loaded)");
@@ -192,15 +221,9 @@ Java_com_listenai_describe_llama_LlamaEngine_nativeDescribeImage(
     }
 
     // ---- 2. Compose prompt with the multimodal marker ----
-    // Moondream2 uses Vicuna chat template. <image> marker tells
-    // mtmd_tokenize where the visual embeddings get inserted.
-    const char * marker = mtmd_default_marker();  // typically "<__media__>"
-    std::string full_prompt;
-    full_prompt += "USER: ";
-    full_prompt += marker;
-    full_prompt += "\n";
-    full_prompt += prompt_c;
-    full_prompt += "\nASSISTANT:";
+    const char* tmpl_c = env->GetStringUTFChars(chatTemplateStr, nullptr);
+    std::string full_prompt = compose_chat_prompt(tmpl_c, prompt_c);
+    env->ReleaseStringUTFChars(chatTemplateStr, tmpl_c);
 
     mtmd_input_text input_text;
     input_text.text = full_prompt.c_str();
@@ -345,6 +368,7 @@ Java_com_listenai_describe_llama_LlamaEngine_nativeDescribeImageStream(
     jbyteArray imageBytes,
     jstring promptStr,
     jint maxTokens,
+    jstring chatTemplateStr,
     jobject callback
 ) {
     // Resolve callback methods once up front.
@@ -388,13 +412,9 @@ Java_com_listenai_describe_llama_LlamaEngine_nativeDescribeImageStream(
         return;
     }
 
-    const char * marker = mtmd_default_marker();
-    std::string full_prompt;
-    full_prompt += "USER: ";
-    full_prompt += marker;
-    full_prompt += "\n";
-    full_prompt += prompt_c;
-    full_prompt += "\nASSISTANT:";
+    const char* tmpl_c = env->GetStringUTFChars(chatTemplateStr, nullptr);
+    std::string full_prompt = compose_chat_prompt(tmpl_c, prompt_c);
+    env->ReleaseStringUTFChars(chatTemplateStr, tmpl_c);
 
     mtmd_input_text input_text;
     input_text.text          = full_prompt.c_str();

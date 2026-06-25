@@ -75,6 +75,13 @@ object LlamaEngine {
         imageBytes: ByteArray,
         prompt: String,
         maxTokens: Int,
+        /**
+         * Chat-template name the JNI uses to wrap the user prompt.
+         * Currently supported: "vicuna" (Moondream2's USER:/ASSISTANT:
+         * format) and "smolvlm" (SmolVLM2's ChatML-like format).
+         * Unknown values fall back to the SmolVLM2 template.
+         */
+        chatTemplate: String,
     ): String
 
     /**
@@ -107,6 +114,8 @@ object LlamaEngine {
         imageBytes: ByteArray,
         prompt: String,
         maxTokens: Int,
+        /** See nativeDescribeImage docs — "vicuna" or "smolvlm". */
+        chatTemplate: String,
         callback: DescribeCallback,
     )
 }

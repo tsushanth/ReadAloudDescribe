@@ -11,19 +11,24 @@ import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.PaddingValues
+import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.heightIn
 import androidx.compose.foundation.layout.padding
+import androidx.compose.foundation.selection.selectable
+import androidx.compose.foundation.selection.selectableGroup
 import androidx.compose.material3.Button
 import androidx.compose.material3.Card
 import androidx.compose.material3.CardDefaults
 import androidx.compose.material3.ExperimentalMaterial3Api
 import androidx.compose.material3.LinearProgressIndicator
 import androidx.compose.material3.MaterialTheme
+import androidx.compose.material3.RadioButton
 import androidx.compose.material3.Scaffold
 import androidx.compose.material3.Text
 import androidx.compose.material3.TopAppBar
+import androidx.compose.ui.semantics.Role
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.collectAsState
@@ -41,6 +46,8 @@ import androidx.compose.ui.unit.dp
 import coil.compose.AsyncImage
 import com.listenai.describe.llama.LlamaEngine
 import com.listenai.describe.model.GgufModelDownloader
+import com.listenai.describe.model.ModelKind
+import com.listenai.describe.settings.DescribeSettings
 import com.listenai.describe.tts.DescribeTts
 import com.listenai.describe.ui.theme.ReadAloudDescribeTheme
 import kotlinx.coroutines.Dispatchers
@@ -147,15 +154,28 @@ class DescribeActivity : ComponentActivity() {
 @Composable
 private fun DescribeScreen(sharedImage: Uri?, nativeInfo: String) {
     val context = LocalContext.current
-    val downloader = remember { GgufModelDownloader.getInstance(context) }
+
+    // Selected model — observe so a toggle change re-keys the downloader
+    // + engine without needing to recreate the activity.
+    val settings = remember { DescribeSettings.getInstance(context) }
+    val selectedModel by settings.selectedModel.collectAsState()
+
+    // Downloader is per-ModelKind so user can have one model on disk
+    // while another is downloading. remember(selectedModel) re-fetches
+    // the matching instance whenever the user toggles.
+    val downloader = remember(selectedModel) {
+        GgufModelDownloader.getInstance(context, selectedModel)
+    }
     val downloadState by downloader.state.collectAsState()
 
     // Engine-load state. Initialize from the process-singleton so the
     // label is honest after an activity re-entry (e.g. Photos share)
     // when the engine is already loaded in our long-lived process.
-    var engineStatus by remember {
+    var engineStatus by remember(selectedModel) {
         mutableStateOf(
-            if (LlamaEngineHolder.handle != 0L) "Engine: ready" else "Engine: not loaded"
+            if (LlamaEngineHolder.handle != 0L && LlamaEngineHolder.loadedKind == selectedModel)
+                "Engine: ready (${selectedModel.displayName})"
+            else "Engine: not loaded"
         )
     }
 
@@ -164,17 +184,34 @@ private fun DescribeScreen(sharedImage: Uri?, nativeInfo: String) {
     var description by remember { mutableStateOf<String?>(null) }
     var describing by remember { mutableStateOf(false) }
 
-    // Auto-trigger on first composition. Idempotent — the orchestrator
-    // returns immediately if the models are already on disk.
-    LaunchedEffect(Unit) {
+    // Auto-trigger on first composition for the current ModelKind.
+    // Idempotent — returns immediately if its GGUFs are already on disk.
+    LaunchedEffect(selectedModel) {
         downloader.startIfPossible()
     }
 
-    // Engine handle as a Compose state so LaunchedEffect can key on
-    // it. The process-singleton (LlamaEngineHolder) is just a survivor
-    // across activity recreations; we copy it into local state on
-    // recomposition so the UI sees the live value.
+    // When the user toggles models, free any engine handle belonging to
+    // the OLD model and reset the local engine-handle state so the load
+    // LaunchedEffect re-runs against the new model's GGUFs.
     var engineHandle by remember { mutableStateOf(LlamaEngineHolder.handle) }
+    LaunchedEffect(selectedModel) {
+        if (LlamaEngineHolder.handle != 0L && LlamaEngineHolder.loadedKind != selectedModel) {
+            Log.i("DescribeActivity", "ModelKind toggled → ${selectedModel.name}; freeing previous engine")
+            val toFree = LlamaEngineHolder.handle
+            LlamaEngineHolder.handle = 0L
+            LlamaEngineHolder.loadedKind = null
+            engineHandle = 0L
+            description = null
+            engineStatus = "Engine: switching to ${selectedModel.displayName}…"
+            withContext(Dispatchers.IO) {
+                try {
+                    LlamaEngine.nativeFreeModels(toFree)
+                } catch (t: Throwable) {
+                    Log.w("DescribeActivity", "nativeFreeModels threw on toggle", t)
+                }
+            }
+        }
+    }
 
     // TTS engine wrapper. Prefers com.listenai.voice when installed,
     // falls back to the device's system default. Auto-cleans up when
@@ -192,10 +229,11 @@ private fun DescribeScreen(sharedImage: Uri?, nativeInfo: String) {
     val scope = rememberCoroutineScope()
 
     // When the downloader settles into Ready, auto-load both models
-    // via the JNI bridge on Dispatchers.IO.
-    LaunchedEffect(downloadState) {
+    // via the JNI bridge on Dispatchers.IO. Re-keyed on selectedModel
+    // so a toggle change re-fires this with the new GGUF paths.
+    LaunchedEffect(downloadState, selectedModel) {
         if (downloadState is GgufModelDownloader.State.Ready && engineHandle == 0L) {
-            engineStatus = "Loading engine…"
+            engineStatus = "Loading ${selectedModel.displayName} engine…"
             withContext(Dispatchers.IO) {
                 val t0 = System.currentTimeMillis()
                 val handle = try {
@@ -209,9 +247,10 @@ private fun DescribeScreen(sharedImage: Uri?, nativeInfo: String) {
                 }
                 val dt = System.currentTimeMillis() - t0
                 LlamaEngineHolder.handle = handle
+                LlamaEngineHolder.loadedKind = if (handle != 0L) selectedModel else null
                 engineHandle = handle           // triggers the describe LaunchedEffect
                 engineStatus = if (handle != 0L)
-                    "Engine: loaded (handle=$handle, ${dt}ms)"
+                    "Engine: loaded ${selectedModel.displayName} (handle=$handle, ${dt}ms)"
                 else
                     "Engine: load FAILED (see logcat)"
                 Log.i("DescribeActivity", engineStatus)
@@ -320,17 +359,20 @@ private fun DescribeScreen(sharedImage: Uri?, nativeInfo: String) {
                 LlamaEngine.nativeDescribeImageStream(
                     handle = engineHandle,
                     imageBytes = bytes,
-                    // Concise prompt (v0.1.2): the v0.1.1 prompt asked for
-                    // "in detail" descriptions that Moondream2 at Q5_K_M
-                    // routinely padded with plausible-but-absent objects
-                    // (Warren's "white phone + green mouse" feedback).
-                    // First attempt added an "I am not sure" escape clause
-                    // — model collapsed and returned that on every photo.
-                    // This version keeps Moondream's natural caption mode
-                    // but caps it short, so it has less rope to hang
-                    // itself with. maxTokens 200 → 120 is a hard ceiling.
-                    prompt = "Briefly describe what you see in this image in 1 or 2 sentences.",
+                    // Literal-objects prompt (Phase A iter): SmolVLM2 + the
+                    // v0.1.2 "what you see" prompt still hallucinated the
+                    // ACTIVITY (a kid pointing at sand became "drawing
+                    // with a crayon"). Small VLMs infer plausible actions
+                    // from visual context unless explicitly anchored to
+                    // posture + literal objects. Positive-only phrasing
+                    // (no "do not X" clauses — the earlier "I am not sure"
+                    // escape-clause failure showed small VLMs over-latch
+                    // onto negative instructions). The same prompt also
+                    // helps Moondream2 — architecture difference is
+                    // mostly latency, not the hallucination failure mode.
+                    prompt = "In 1 or 2 sentences, describe what is visible: the people and their body positions, and the main objects in the scene.",
                     maxTokens = 120,
+                    chatTemplate = selectedModel.chatTemplate,
                     callback = callback,
                 )
             } catch (t: Throwable) {
@@ -356,7 +398,15 @@ private fun DescribeScreen(sharedImage: Uri?, nativeInfo: String) {
                 .padding(16.dp),
             verticalArrangement = Arrangement.spacedBy(16.dp)
         ) {
-            ModelStatusCard(state = downloadState, onRetry = { downloader.startIfPossible() })
+            ModelSelectorCard(
+                selected = selectedModel,
+                onSelect = { settings.setSelectedModel(it) },
+            )
+            ModelStatusCard(
+                kind = selectedModel,
+                state = downloadState,
+                onRetry = { downloader.startIfPossible() },
+            )
             // Engine handle + llama system_info are dev-only diagnostics.
             // Hide in release builds so Play screenshots / shipped UI
             // stay clean.
@@ -386,21 +436,91 @@ private fun DescribeScreen(sharedImage: Uri?, nativeInfo: String) {
 
 /**
  * Process-singleton for the native engine handle so we don't reload
- * 3.5 GB of weights on every activity recreation or share-target
- * re-entry. Day-7b will move this to a proper DescribeApplication-
- * owned object with lifecycle hooks.
+ * weights on every activity recreation or share-target re-entry.
+ * [loadedKind] records which ModelKind the current handle was loaded
+ * for — when the user toggles models, DescribeScreen detects a
+ * mismatch, frees the handle, and triggers a fresh load against the
+ * new kind's GGUFs.
  */
 private object LlamaEngineHolder {
     @Volatile var handle: Long = 0L
+    @Volatile var loadedKind: ModelKind? = null
+}
+
+/**
+ * Two-option model picker. Sits above the status card so the user can
+ * see + change which model they're on before deciding to wait through
+ * a download. Toggling the radio:
+ *   - persists the choice via DescribeSettings
+ *   - DescribeScreen observes that StateFlow + re-keys the downloader
+ *   - if the OLD model's engine is loaded, DescribeScreen frees it
+ *   - downloader auto-starts the NEW model's GGUF fetch if not on disk
+ *
+ * Accessibility: row is one TalkBack focus target with a single
+ * "double-tap to select" action; size + name announced together.
+ */
+@Composable
+private fun ModelSelectorCard(
+    selected: ModelKind,
+    onSelect: (ModelKind) -> Unit,
+) {
+    Card(
+        modifier = Modifier.fillMaxWidth(),
+        colors = CardDefaults.cardColors(),
+    ) {
+        Column(
+            modifier = Modifier
+                .fillMaxWidth()
+                .padding(horizontal = 16.dp, vertical = 12.dp)
+                .selectableGroup(),
+            verticalArrangement = Arrangement.spacedBy(4.dp),
+        ) {
+            Text(
+                text = "Model",
+                style = MaterialTheme.typography.titleSmall,
+            )
+            Text(
+                text = "\"Fast\" is much quicker but less detailed. \"Detailed\" is slower but recognizes more.",
+                style = MaterialTheme.typography.bodySmall,
+                color = MaterialTheme.colorScheme.onSurfaceVariant,
+            )
+            for (kind in ModelKind.entries) {
+                val isSelected = kind == selected
+                Row(
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .selectable(
+                            selected = isSelected,
+                            onClick = { onSelect(kind) },
+                            role = Role.RadioButton,
+                        )
+                        .padding(vertical = 8.dp),
+                    verticalAlignment = Alignment.CenterVertically,
+                ) {
+                    RadioButton(
+                        selected = isSelected,
+                        onClick = null,            // selectable() handles it
+                    )
+                    Column(modifier = Modifier.padding(start = 8.dp)) {
+                        Text(
+                            text = "${kind.displayName} — ${kind.sizeLabel}",
+                            style = MaterialTheme.typography.bodyLarge,
+                        )
+                    }
+                }
+            }
+        }
+    }
 }
 
 @Composable
 private fun ModelStatusCard(
+    kind: ModelKind,
     state: GgufModelDownloader.State,
     onRetry: () -> Unit,
 ) {
     // No card when models are ready — keeps the UI clean once setup
-    // is one-time-done. Day 7 will surface inference progress here instead.
+    // is one-time-done.
     if (state is GgufModelDownloader.State.Ready) return
 
     Card(
@@ -418,11 +538,11 @@ private fun ModelStatusCard(
             when (state) {
                 is GgufModelDownloader.State.Idle -> {
                     Text(
-                        text = "Voice model not downloaded",
+                        text = "${kind.displayName} model not downloaded",
                         style = MaterialTheme.typography.titleMedium
                     )
                     Text(
-                        text = "Required to describe images. ~1.9 GB, downloads on Wi-Fi only.",
+                        text = "Required to describe images. ${kind.sizeLabel}, downloads on Wi-Fi only.",
                         style = MaterialTheme.typography.bodyMedium
                     )
                     Button(onClick = onRetry) {
@@ -431,7 +551,7 @@ private fun ModelStatusCard(
                 }
                 is GgufModelDownloader.State.Waiting -> {
                     Text(
-                        text = "Waiting to download",
+                        text = "Waiting to download ${kind.displayName} model",
                         style = MaterialTheme.typography.titleMedium
                     )
                     Text(
@@ -441,7 +561,7 @@ private fun ModelStatusCard(
                 }
                 is GgufModelDownloader.State.Downloading -> {
                     Text(
-                        text = "Downloading voice model — ${state.percent}%",
+                        text = "Downloading ${kind.displayName} model — ${state.percent}%",
                         style = MaterialTheme.typography.titleMedium
                     )
                     Text(

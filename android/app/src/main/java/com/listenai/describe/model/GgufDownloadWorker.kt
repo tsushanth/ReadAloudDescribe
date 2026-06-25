@@ -40,22 +40,28 @@ class GgufDownloadWorker(
 
     override suspend fun doWork(): Result = withContext(Dispatchers.IO) {
         try {
-            setForeground(createForegroundInfo("Preparing download…", 0))
+            // Which model to download is passed via input data so the
+            // user can pick between (currently) Moondream2 and SmolVLM2
+            // and each gets its own unique-work-name + own GGUF files
+            // on disk. Default to Moondream2 if no kind is set so the
+            // pre-toggle code paths still work.
+            val kind = ModelKind.fromName(inputData.getString(KEY_MODEL_KIND))
+            setForeground(createForegroundInfo("Preparing ${kind.displayName} model…", 0))
 
             val targets = listOf(
                 FileTarget(
-                    url = MMPROJ_URL,
-                    fileName = MMPROJ_FILE_NAME,
-                    expectedMinBytes = 800L * 1024 * 1024,    // ~868MB; allow 800MB minimum
-                    expectedMaxBytes = 1200L * 1024 * 1024,
-                    label = "Vision model",
+                    url = kind.mmprojUrl,
+                    fileName = kind.mmprojFileName,
+                    expectedMinBytes = kind.expectedMmprojMinBytes,
+                    expectedMaxBytes = kind.expectedMmprojMaxBytes,
+                    label = "${kind.displayName} vision model",
                 ),
                 FileTarget(
-                    url = TEXT_MODEL_URL,
-                    fileName = TEXT_MODEL_FILE_NAME,
-                    expectedMinBytes = 900L * 1024 * 1024,    // ~991MB Q5_K_M
-                    expectedMaxBytes = 1200L * 1024 * 1024,
-                    label = "Language model",
+                    url = kind.textUrl,
+                    fileName = kind.textFileName,
+                    expectedMinBytes = kind.expectedTextMinBytes,
+                    expectedMaxBytes = kind.expectedTextMaxBytes,
+                    label = "${kind.displayName} language model",
                 ),
             )
 
@@ -264,28 +270,14 @@ class GgufDownloadWorker(
 
     companion object {
         private const val TAG = "GgufDownloadWorker"
-        const val WORK_NAME = "gguf_download_worker"
 
         const val CHANNEL_ID = "describe_gguf_download"
         const val NOTIFICATION_ID = 0x44D1  // arbitrary; "DD" for Describe Download
 
-        // Day-8 URLs: vendored to a GitHub release on this repo for
-        // stability + smaller bundle. Q5_K_M text-model was the Day-3
-        // sweet-spot pick (half the size of F16, no hallucinated text
-        // specifics — Q4_K_M was disqualified for fabricating names).
-        // mmproj F16 is the upstream file mirrored verbatim so both
-        // files are in one place under our control. Total ~1.86 GB
-        // (down from 3.5 GB).
-        const val MMPROJ_URL =
-            "https://github.com/tsushanth/ReadAloudDescribe/releases/download/v0.1.0-models/moondream2-mmproj-f16.gguf"
-        const val TEXT_MODEL_URL =
-            "https://github.com/tsushanth/ReadAloudDescribe/releases/download/v0.1.0-models/moondream2-text-model-Q5_K_M.gguf"
+        // Input key: tells the worker which ModelKind to fetch.
+        const val KEY_MODEL_KIND = "model_kind"
 
-        const val MMPROJ_FILE_NAME = "moondream2-mmproj-f16.gguf"
-        const val TEXT_MODEL_FILE_NAME = "moondream2-text-model-Q5_K_M.gguf"
-
-        // Output keys for setProgress() — read by GgufModelDownloader
-        // via WorkInfo.progress.
+        // Output / progress keys — read by GgufModelDownloader via WorkInfo.
         const val KEY_PERCENT = "percent"
         const val KEY_DOWNLOADED_BYTES = "downloaded_bytes"
         const val KEY_TOTAL_BYTES = "total_bytes"
@@ -294,6 +286,7 @@ class GgufDownloadWorker(
         const val KEY_FILE_LABEL = "file_label"
         const val KEY_ERROR = "error"
 
-        const val ESTIMATED_TOTAL_MB = 1860
+        /** Unique work name per kind — pause/cancel one without affecting the other. */
+        fun workName(kind: ModelKind): String = "gguf_download_${kind.name}"
     }
 }

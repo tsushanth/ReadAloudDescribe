@@ -5,6 +5,7 @@ import android.net.ConnectivityManager
 import android.net.NetworkCapabilities
 import android.util.Log
 import androidx.work.Constraints
+import androidx.work.Data
 import androidx.work.ExistingWorkPolicy
 import androidx.work.NetworkType
 import androidx.work.OneTimeWorkRequestBuilder
@@ -16,17 +17,21 @@ import kotlinx.coroutines.flow.asStateFlow
 import java.io.File
 
 /**
- * Orchestrator around [GgufDownloadWorker]. Exposes a StateFlow the
- * UI can observe and a single startIfPossible() entry point.
+ * Orchestrator around [GgufDownloadWorker], scoped to a single
+ * [ModelKind]. Exposes a StateFlow the UI can observe and a single
+ * startIfPossible() entry point.
  *
- * Mirrors the shape of ReadAloud Voice's KokoroModelDownloader so the
- * same patterns apply: idempotent enqueue, lazy auto-start when
- * inference is requested but the model isn't on disk, surface a
- * specific "why are we waiting" reason rather than the misleading
- * "Waiting for Wi-Fi" message.
+ * One instance per ModelKind (cached in [instances]), so the user can
+ * have Moondream2 already on disk while SmolVLM2 is downloading
+ * without one downloader's state overwriting the other's.
+ *
+ * Mirrors the shape of ReadAloud Voice's KokoroModelDownloader — same
+ * resumable-download + foreground-promotion + specific "why are we
+ * waiting" reason pattern.
  */
 class GgufModelDownloader private constructor(
     private val context: Context,
+    private val kind: ModelKind,
 ) {
     sealed class State {
         object Idle : State()
@@ -43,51 +48,53 @@ class GgufModelDownloader private constructor(
         data class Failed(val message: String) : State()
     }
 
-    private val _state = MutableStateFlow<State>(if (areAllModelsOnDisk()) State.Ready else State.Idle)
+    private val _state = MutableStateFlow<State>(
+        if (areAllModelsOnDisk()) State.Ready else State.Idle
+    )
     val state: StateFlow<State> = _state.asStateFlow()
 
     val mmprojFile: File
-        get() = File(context.filesDir, GgufDownloadWorker.MMPROJ_FILE_NAME)
+        get() = File(context.filesDir, kind.mmprojFileName)
 
     val textModelFile: File
-        get() = File(context.filesDir, GgufDownloadWorker.TEXT_MODEL_FILE_NAME)
+        get() = File(context.filesDir, kind.textFileName)
 
     fun areAllModelsOnDisk(): Boolean {
         // Best-effort: just check the files exist and have non-trivial
-        // size. Full GGUF-magic-number validation comes in Day 7 when
-        // we actually load them via llama.cpp — a corrupt file will
-        // surface as a load failure with a clear error then.
+        // size matching this kind's expected range. Full GGUF-magic-
+        // number validation happens at llama.cpp load time — a corrupt
+        // file will surface as a load failure with a clear error.
         val mmproj = mmprojFile
         val text = textModelFile
-        return mmproj.exists() && mmproj.length() > 100L * 1024 * 1024 &&
-            text.exists() && text.length() > 1000L * 1024 * 1024
+        return mmproj.exists() && mmproj.length() >= kind.expectedMmprojMinBytes &&
+            text.exists() && text.length() >= kind.expectedTextMinBytes
     }
 
     fun startIfPossible() {
         if (areAllModelsOnDisk()) {
-            Log.i(TAG, "startIfPossible: both models already on disk")
+            Log.i(TAG, "startIfPossible[${kind.name}]: both models already on disk")
             _state.value = State.Ready
             return
         }
 
-        Log.i(TAG, "startIfPossible: enqueuing GgufDownloadWorker (unmetered)")
-        // For now: Wi-Fi only. No allow-cellular pref yet; users won't
-        // want to download 1.9 GB over LTE accidentally. Add a settings
-        // toggle in Day 8 once the rest of the app works.
+        Log.i(TAG, "startIfPossible[${kind.name}]: enqueuing GgufDownloadWorker (unmetered)")
+        // Wi-Fi only — users don't want to burn 1.9 GB over LTE
+        // accidentally. (Same rationale as KokoroModelDownloader.)
         val constraints = Constraints.Builder()
             .setRequiredNetworkType(NetworkType.UNMETERED)
-            // Intentionally NO setRequiresBatteryNotLow(true) — this is
-            // an explicit user-initiated download; Samsung/Pixel battery
-            // throttling shouldn't block it. (Same rationale as ReadAloud
-            // Voice's KokoroModelDownloader.)
             .build()
 
         val request = OneTimeWorkRequestBuilder<GgufDownloadWorker>()
             .setConstraints(constraints)
+            .setInputData(
+                Data.Builder()
+                    .putString(GgufDownloadWorker.KEY_MODEL_KIND, kind.name)
+                    .build()
+            )
             .build()
 
         WorkManager.getInstance(context).enqueueUniqueWork(
-            GgufDownloadWorker.WORK_NAME,
+            GgufDownloadWorker.workName(kind),
             ExistingWorkPolicy.KEEP,
             request,
         )
@@ -95,7 +102,7 @@ class GgufModelDownloader private constructor(
     }
 
     fun cancel() {
-        WorkManager.getInstance(context).cancelUniqueWork(GgufDownloadWorker.WORK_NAME)
+        WorkManager.getInstance(context).cancelUniqueWork(GgufDownloadWorker.workName(kind))
         _state.value = if (areAllModelsOnDisk()) State.Ready else State.Idle
     }
 
@@ -105,7 +112,7 @@ class GgufModelDownloader private constructor(
         if (observing) return
         observing = true
         val liveData = WorkManager.getInstance(context)
-            .getWorkInfosForUniqueWorkLiveData(GgufDownloadWorker.WORK_NAME)
+            .getWorkInfosForUniqueWorkLiveData(GgufDownloadWorker.workName(kind))
         liveData.observeForever { infos ->
             val info = infos?.firstOrNull() ?: return@observeForever
             when (info.state) {
@@ -124,7 +131,7 @@ class GgufModelDownloader private constructor(
                     }
                 }
                 WorkInfo.State.ENQUEUED, WorkInfo.State.BLOCKED -> {
-                    _state.value = State.Waiting(currentWaitReason(context))
+                    _state.value = State.Waiting(currentWaitReason(context, kind))
                 }
                 WorkInfo.State.SUCCEEDED -> {
                     _state.value = State.Ready
@@ -144,13 +151,15 @@ class GgufModelDownloader private constructor(
     companion object {
         private const val TAG = "GgufModelDownloader"
 
-        @Volatile
-        private var instance: GgufModelDownloader? = null
+        private val instances = mutableMapOf<ModelKind, GgufModelDownloader>()
+        private val lock = Any()
 
-        fun getInstance(context: Context): GgufModelDownloader {
-            return instance ?: synchronized(this) {
-                instance ?: GgufModelDownloader(context.applicationContext)
-                    .also { instance = it }
+        fun getInstance(context: Context, kind: ModelKind): GgufModelDownloader {
+            synchronized(lock) {
+                instances[kind]?.let { return it }
+                val created = GgufModelDownloader(context.applicationContext, kind)
+                instances[kind] = created
+                return created
             }
         }
 
@@ -160,9 +169,9 @@ class GgufModelDownloader private constructor(
          * parks the job in ENQUEUED/BLOCKED, surface the specific
          * cause rather than always saying "Waiting for Wi-Fi".
          */
-        private fun currentWaitReason(context: Context): String {
+        private fun currentWaitReason(context: Context, kind: ModelKind): String {
             if (!isOnUnmeteredNetwork(context)) {
-                return "Waiting for Wi-Fi — the 1.9 GB voice model will download as soon as you connect."
+                return "Waiting for Wi-Fi — the ${kind.sizeLabel} model will download as soon as you connect."
             }
             val bm = context.getSystemService(Context.BATTERY_SERVICE)
                 as? android.os.BatteryManager
