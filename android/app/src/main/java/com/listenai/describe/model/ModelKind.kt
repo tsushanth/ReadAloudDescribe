@@ -42,6 +42,16 @@ enum class ModelKind(
      * Per-kind so each model gets its right-sized cache.
      */
     val nCtx: Int,
+    /**
+     * SHA-256 of the mmproj file as published. After download, the
+     * worker hashes the on-disk file and compares; on mismatch, the
+     * file is deleted and the download fails with a clear "corrupted,
+     * retry" message rather than silently handing llama.cpp a junk
+     * file (which previously surfaced as a confusing native crash on
+     * one tester's Samsung).
+     */
+    val mmprojSha256: String,
+    val textSha256: String,
 ) {
     MOONDREAM2(
         displayName = "Detailed",
@@ -59,6 +69,8 @@ enum class ModelKind(
         estimatedTotalMb = 1860,
         chatTemplate = "vicuna",
         nCtx = 2048,
+        mmprojSha256 = "4cc1cb3660d87ff56432ebeb7884ad35d67c48c7b9f6b2856f305e39c38eed8f",
+        textSha256 = "cbbe68f995ae12e3f804820de3905fd2cdbf67be6f6799d030699d967ea4167e",
     ),
 
     SMOLVLM2_500M(
@@ -77,6 +89,8 @@ enum class ModelKind(
         estimatedTotalMb = 640,
         chatTemplate = "smolvlm",
         nCtx = 4096,
+        mmprojSha256 = "b5dc8ebe7cbeab66a5369693960a52515d7824f13d4063ceca78431f2a6b59b0",
+        textSha256 = "6f67b8036b2469fcd71728702720c6b51aebd759b78137a8120733b4d66438bc",
     );
 
     companion object {

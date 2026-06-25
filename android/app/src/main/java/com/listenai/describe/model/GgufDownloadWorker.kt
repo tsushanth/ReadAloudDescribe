@@ -54,6 +54,7 @@ class GgufDownloadWorker(
                     fileName = kind.mmprojFileName,
                     expectedMinBytes = kind.expectedMmprojMinBytes,
                     expectedMaxBytes = kind.expectedMmprojMaxBytes,
+                    expectedSha256 = kind.mmprojSha256,
                     label = "${kind.displayName} vision model",
                 ),
                 FileTarget(
@@ -61,6 +62,7 @@ class GgufDownloadWorker(
                     fileName = kind.textFileName,
                     expectedMinBytes = kind.expectedTextMinBytes,
                     expectedMaxBytes = kind.expectedTextMaxBytes,
+                    expectedSha256 = kind.textSha256,
                     label = "${kind.displayName} language model",
                 ),
             )
@@ -187,6 +189,49 @@ class GgufDownloadWorker(
             response.close()
         }
         Log.i(TAG, "${target.fileName} done, ${dest.length()} bytes (expected $expectedSize)")
+
+        // SHA-256 verification — guards against the silent-corruption
+        // failure mode that bit one tester's Samsung (mmproj file was
+        // partially overwritten, llama.cpp crashed natively at load
+        // with no obvious cause). Re-reading 1 GB on a phone is ~3–5 s
+        // of additional IO at the end of a multi-minute download —
+        // a fair price for a confident "the file you just downloaded
+        // is byte-identical to what we published" guarantee.
+        // Empty expectedSha256 = skip (defensive; should never happen
+        // in production since ModelKind hardcodes them).
+        if (target.expectedSha256.isNotBlank()) {
+            setForeground(createForegroundInfo("Verifying ${target.label}…", 100))
+            val actual = sha256OfFile(dest)
+            if (!actual.equals(target.expectedSha256, ignoreCase = true)) {
+                Log.w(TAG, "${target.fileName} SHA mismatch — expected ${target.expectedSha256}, got $actual; deleting")
+                dest.delete()
+                throw RuntimeException(
+                    "Downloaded ${target.label} is corrupted (SHA mismatch). " +
+                        "It will be re-downloaded next time."
+                )
+            }
+            Log.i(TAG, "${target.fileName} SHA verified")
+        }
+    }
+
+    /**
+     * Streaming SHA-256 of a file. Reads in 256 KB chunks so a 1 GB
+     * file uses constant memory. Returns lowercase hex.
+     */
+    private fun sha256OfFile(f: File): String {
+        val md = java.security.MessageDigest.getInstance("SHA-256")
+        f.inputStream().use { stream ->
+            val buf = ByteArray(256 * 1024)
+            while (true) {
+                val n = stream.read(buf)
+                if (n <= 0) break
+                md.update(buf, 0, n)
+            }
+        }
+        val bytes = md.digest()
+        val sb = StringBuilder(bytes.size * 2)
+        for (b in bytes) sb.append("%02x".format(b))
+        return sb.toString()
     }
 
     // ----------------------------------------------------------------
@@ -265,6 +310,7 @@ class GgufDownloadWorker(
         val fileName: String,
         val expectedMinBytes: Long,
         val expectedMaxBytes: Long,
+        val expectedSha256: String,
         val label: String,
     )
 
