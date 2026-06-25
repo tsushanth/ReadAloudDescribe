@@ -46,7 +46,7 @@ object LlamaEngine {
      *
      * MUST be called off the main thread.
      */
-    external fun nativeLoadModels(mmprojPath: String, textModelPath: String): Long
+    external fun nativeLoadModels(mmprojPath: String, textModelPath: String, nCtx: Int): Long
 
     /**
      * Releases all native resources held by the handle returned from

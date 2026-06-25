@@ -240,6 +240,7 @@ private fun DescribeScreen(sharedImage: Uri?, nativeInfo: String) {
                     LlamaEngine.nativeLoadModels(
                         downloader.mmprojFile.absolutePath,
                         downloader.textModelFile.absolutePath,
+                        selectedModel.nCtx,
                     )
                 } catch (t: Throwable) {
                     Log.e("DescribeActivity", "nativeLoadModels threw", t)

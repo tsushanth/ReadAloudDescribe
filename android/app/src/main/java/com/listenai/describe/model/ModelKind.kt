@@ -33,6 +33,15 @@ enum class ModelKind(
     val expectedTextMaxBytes: Long,
     val estimatedTotalMb: Int,
     val chatTemplate: String,   // passed to native; describe_jni branches on it
+    /**
+     * llama context size. Moondream2 naturally produces ~729 vision
+     * tokens + a few hundred decode tokens, so 2048 is plenty —
+     * bumping to 4096 doubles the KV cache and caused a ~75 % prefill
+     * regression on Samsung S22 (RAM-constrained 8 GB). SmolVLM2's
+     * image-splitting can multiply vision tokens; it needs 4096.
+     * Per-kind so each model gets its right-sized cache.
+     */
+    val nCtx: Int,
 ) {
     MOONDREAM2(
         displayName = "Detailed",
@@ -49,6 +58,7 @@ enum class ModelKind(
         expectedTextMaxBytes = 1200L * 1024 * 1024,
         estimatedTotalMb = 1860,
         chatTemplate = "vicuna",
+        nCtx = 2048,
     ),
 
     SMOLVLM2_500M(
@@ -66,6 +76,7 @@ enum class ModelKind(
         expectedTextMaxBytes = 600L * 1024 * 1024,
         estimatedTotalMb = 640,
         chatTemplate = "smolvlm",
+        nCtx = 4096,
     );
 
     companion object {

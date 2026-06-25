@@ -63,7 +63,7 @@ Java_com_listenai_describe_llama_LlamaEngine_nativeSystemInfo(
 extern "C" JNIEXPORT jlong JNICALL
 Java_com_listenai_describe_llama_LlamaEngine_nativeLoadModels(
     JNIEnv* env, jobject /* this */,
-    jstring mmprojPath, jstring textModelPath
+    jstring mmprojPath, jstring textModelPath, jint nCtx
 ) {
     const char* mmproj_c = env->GetStringUTFChars(mmprojPath, nullptr);
     const char* text_c   = env->GetStringUTFChars(textModelPath, nullptr);
@@ -90,7 +90,12 @@ Java_com_listenai_describe_llama_LlamaEngine_nativeLoadModels(
 
     // ---- context for inference ----
     llama_context_params cparams = llama_context_default_params();
-    cparams.n_ctx      = 4096;  // SmolVLM2 image-splitting can multiply vision tokens; 4k leaves headroom
+    // Per-ModelKind n_ctx (Moondream2 → 2048, SmolVLM2 → 4096). Bumping
+    // 2048 → 4096 unconditionally regressed Moondream prefill ~75 % on
+    // Samsung S22 due to doubled KV-cache pressure on its 8 GB RAM,
+    // even though Moondream doesn't need the headroom. Fall back to
+    // 2048 if Kotlin passes 0 (defensive).
+    cparams.n_ctx      = (nCtx > 0) ? (uint32_t)nCtx : 2048u;
     cparams.n_batch    = 512;
     cparams.n_ubatch   = 512;
     // Galaxy S22 has 1 Cortex-X2 + 3 A710 + 4 A510 (8 cores). 4 threads
