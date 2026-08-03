@@ -5,4 +5,7 @@
     <string name="empty_state_share_hint">Share an image to ReadAloud Describe from any app — Photos, Gmail, Chrome — to hear a description.</string>
     <string name="shared_image_content_description">The image you shared</string>
     <string name="placeholder_describe_pending">(Description goes here — Day 7 wires up llama.cpp inference.)</string>
+    <string name="accessibility_service_label">ReadAloud Describe Screen Reader</string>
+    <string name="accessibility_service_description">Early-development screen reader. Currently inert — it observes screen events for testing but does not yet speak or navigate for you. Do not rely on it in place of TalkBack.</string>
+    <string name="braille_ime_label">ReadAloud Braille Keyboard</string>
 </resources>

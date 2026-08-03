@@ -1,12 +1,17 @@
 package com.listenai.describe
 
+import android.Manifest
 import android.content.Intent
+import android.content.pm.PackageManager
 import android.net.Uri
 import android.os.Build
 import android.os.Bundle
 import android.util.Log
 import androidx.activity.ComponentActivity
+import androidx.activity.compose.rememberLauncherForActivityResult
 import androidx.activity.compose.setContent
+import androidx.activity.result.contract.ActivityResultContracts
+import androidx.core.content.ContextCompat
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
@@ -44,6 +49,11 @@ import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.res.stringResource
 import androidx.compose.ui.unit.dp
 import coil.compose.AsyncImage
+import com.listenai.describe.access.gesture.GestureAction
+import com.listenai.describe.access.gesture.GestureMappingStore
+import com.listenai.describe.engine.DescribePrompts
+import com.listenai.describe.translate.TranslateSettings
+import com.listenai.describe.engine.LlamaEngineController
 import com.listenai.describe.llama.LlamaEngine
 import com.listenai.describe.model.GgufModelDownloader
 import com.listenai.describe.model.ModelKind
@@ -168,12 +178,16 @@ private fun DescribeScreen(sharedImage: Uri?, nativeInfo: String) {
     }
     val downloadState by downloader.state.collectAsState()
 
-    // Engine-load state. Initialize from the process-singleton so the
-    // label is honest after an activity re-entry (e.g. Photos share)
-    // when the engine is already loaded in our long-lived process.
+    // App-scoped controller (survives activity recreation / share-target
+    // re-entry within the same process) — see DescribeApplication.
+    val engineController = remember { DescribeApplication.engineController(context) }
+
+    // Engine-load state. Initialize from the controller so the label is
+    // honest after an activity re-entry (e.g. Photos share) when the
+    // engine is already loaded in our long-lived process.
     var engineStatus by remember(selectedModel) {
         mutableStateOf(
-            if (LlamaEngineHolder.handle != 0L && LlamaEngineHolder.loadedKind == selectedModel)
+            if (engineController.handle != 0L && engineController.loadedKind == selectedModel)
                 "Engine: ready (${selectedModel.displayName})"
             else "Engine: not loaded"
         )
@@ -190,26 +204,19 @@ private fun DescribeScreen(sharedImage: Uri?, nativeInfo: String) {
         downloader.startIfPossible()
     }
 
-    // When the user toggles models, free any engine handle belonging to
-    // the OLD model and reset the local engine-handle state so the load
-    // LaunchedEffect re-runs against the new model's GGUFs.
-    var engineHandle by remember { mutableStateOf(LlamaEngineHolder.handle) }
+    // When the user toggles models, reset the local engine-handle state
+    // so the load LaunchedEffect below re-runs against the new model's
+    // GGUFs. The actual free-old/load-new sequencing now lives in
+    // LlamaEngineController.ensureLoaded, which serializes it behind a
+    // mutex (needed now that both this Activity and the accessibility
+    // service can call into the same controller).
+    var engineHandle by remember { mutableStateOf(engineController.handle) }
     LaunchedEffect(selectedModel) {
-        if (LlamaEngineHolder.handle != 0L && LlamaEngineHolder.loadedKind != selectedModel) {
-            Log.i("DescribeActivity", "ModelKind toggled → ${selectedModel.name}; freeing previous engine")
-            val toFree = LlamaEngineHolder.handle
-            LlamaEngineHolder.handle = 0L
-            LlamaEngineHolder.loadedKind = null
+        if (engineController.handle != 0L && engineController.loadedKind != selectedModel) {
+            Log.i("DescribeActivity", "ModelKind toggled → ${selectedModel.name}; will switch engine")
             engineHandle = 0L
             description = null
             engineStatus = "Engine: switching to ${selectedModel.displayName}…"
-            withContext(Dispatchers.IO) {
-                try {
-                    LlamaEngine.nativeFreeModels(toFree)
-                } catch (t: Throwable) {
-                    Log.w("DescribeActivity", "nativeFreeModels threw on toggle", t)
-                }
-            }
         }
     }
 
@@ -232,26 +239,19 @@ private fun DescribeScreen(sharedImage: Uri?, nativeInfo: String) {
     // via the JNI bridge on Dispatchers.IO. Re-keyed on selectedModel
     // so a toggle change re-fires this with the new GGUF paths.
     LaunchedEffect(downloadState, selectedModel) {
-        if (downloadState is GgufModelDownloader.State.Ready && engineHandle == 0L) {
+        if (downloadState is GgufModelDownloader.State.Ready && engineController.loadedKind != selectedModel) {
             engineStatus = "Loading ${selectedModel.displayName} engine…"
             withContext(Dispatchers.IO) {
                 val t0 = System.currentTimeMillis()
-                val handle = try {
-                    LlamaEngine.nativeLoadModels(
-                        downloader.mmprojFile.absolutePath,
-                        downloader.textModelFile.absolutePath,
-                        selectedModel.nCtx,
-                    )
-                } catch (t: Throwable) {
-                    Log.e("DescribeActivity", "nativeLoadModels threw", t)
-                    0L
-                }
+                val ok = engineController.ensureLoaded(
+                    selectedModel,
+                    downloader.mmprojFile.absolutePath,
+                    downloader.textModelFile.absolutePath,
+                )
                 val dt = System.currentTimeMillis() - t0
-                LlamaEngineHolder.handle = handle
-                LlamaEngineHolder.loadedKind = if (handle != 0L) selectedModel else null
-                engineHandle = handle           // triggers the describe LaunchedEffect
-                engineStatus = if (handle != 0L)
-                    "Engine: loaded ${selectedModel.displayName} (handle=$handle, ${dt}ms)"
+                engineHandle = engineController.handle   // triggers the describe LaunchedEffect
+                engineStatus = if (ok)
+                    "Engine: loaded ${selectedModel.displayName} (handle=${engineController.handle}, ${dt}ms)"
                 else
                     "Engine: load FAILED (see logcat)"
                 Log.i("DescribeActivity", engineStatus)
@@ -357,27 +357,19 @@ private fun DescribeScreen(sharedImage: Uri?, nativeInfo: String) {
 
             val t0 = System.currentTimeMillis()
             try {
-                LlamaEngine.nativeDescribeImageStream(
-                    handle = engineHandle,
+                engineController.describeStream(
                     imageBytes = bytes,
-                    // Literal-objects prompt (Phase A iter): SmolVLM2 + the
-                    // v0.1.2 "what you see" prompt still hallucinated the
-                    // ACTIVITY (a kid pointing at sand became "drawing
-                    // with a crayon"). Small VLMs infer plausible actions
-                    // from visual context unless explicitly anchored to
-                    // posture + literal objects. Positive-only phrasing
-                    // (no "do not X" clauses — the earlier "I am not sure"
-                    // escape-clause failure showed small VLMs over-latch
-                    // onto negative instructions). The same prompt also
-                    // helps Moondream2 — architecture difference is
-                    // mostly latency, not the hallucination failure mode.
-                    prompt = "In 1 or 2 sentences, describe what is visible: the people and their body positions, and the main objects in the scene.",
+                    // See DescribePrompts.PHOTO_SCENE_PROMPT: positive-only
+                    // phrasing anchored to posture + literal objects — small
+                    // VLMs over-latch onto "do not X" clauses and hallucinate
+                    // less when told what to look for instead.
+                    prompt = DescribePrompts.PHOTO_SCENE_PROMPT,
                     maxTokens = 120,
                     chatTemplate = selectedModel.chatTemplate,
                     callback = callback,
                 )
             } catch (t: Throwable) {
-                Log.e("DescribeActivity", "nativeDescribeImageStream threw", t)
+                Log.e("DescribeActivity", "describeStream threw", t)
                 tokensDone.complete(0)
             }
             val generated = tokensDone.await()
@@ -408,6 +400,9 @@ private fun DescribeScreen(sharedImage: Uri?, nativeInfo: String) {
                 state = downloadState,
                 onRetry = { downloader.startIfPossible() },
             )
+            GestureSettingsCard()
+            TranslateSettingsCard()
+            MicPermissionCard()
             // Engine handle + llama system_info are dev-only diagnostics.
             // Hide in release builds so Play screenshots / shipped UI
             // stay clean.
@@ -433,19 +428,6 @@ private fun DescribeScreen(sharedImage: Uri?, nativeInfo: String) {
             }
         }
     }
-}
-
-/**
- * Process-singleton for the native engine handle so we don't reload
- * weights on every activity recreation or share-target re-entry.
- * [loadedKind] records which ModelKind the current handle was loaded
- * for — when the user toggles models, DescribeScreen detects a
- * mismatch, frees the handle, and triggers a fresh load against the
- * new kind's GGUFs.
- */
-private object LlamaEngineHolder {
-    @Volatile var handle: Long = 0L
-    @Volatile var loadedKind: ModelKind? = null
 }
 
 /**
@@ -589,6 +571,154 @@ private fun ModelStatusCard(
                     }
                 }
                 is GgufModelDownloader.State.Ready -> Unit // handled above
+            }
+        }
+    }
+}
+
+/**
+ * M7 remapping UI: one row per remappable swipe direction
+ * (GestureMappingStore.SLOTS). Tapping a row's button cycles through
+ * the available GestureActions and persists the choice immediately —
+ * no separate "save" step, consistent with ModelSelectorCard's
+ * immediate-persist pattern above.
+ */
+@Composable
+private fun GestureSettingsCard() {
+    val context = LocalContext.current
+    val store = remember { GestureMappingStore.getInstance(context) }
+    val mapping by store.mapping.collectAsState()
+
+    Card(
+        modifier = Modifier.fillMaxWidth(),
+        colors = CardDefaults.cardColors(),
+    ) {
+        Column(
+            modifier = Modifier
+                .fillMaxWidth()
+                .padding(horizontal = 16.dp, vertical = 12.dp),
+            verticalArrangement = Arrangement.spacedBy(4.dp),
+        ) {
+            Text(
+                text = "Gestures",
+                style = MaterialTheme.typography.titleSmall,
+            )
+            Text(
+                text = "Quick single-finger swipes while the screen reader is on. Tap a gesture to change what it does.",
+                style = MaterialTheme.typography.bodySmall,
+                color = MaterialTheme.colorScheme.onSurfaceVariant,
+            )
+            for (slot in GestureMappingStore.SLOTS) {
+                val current = mapping[slot.gestureId] ?: slot.default
+                Row(
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .padding(vertical = 8.dp),
+                    verticalAlignment = Alignment.CenterVertically,
+                ) {
+                    Text(
+                        text = slot.label,
+                        style = MaterialTheme.typography.bodyLarge,
+                        modifier = Modifier.weight(1f),
+                    )
+                    Button(onClick = {
+                        val entries = GestureAction.entries
+                        val next = entries[(entries.indexOf(current) + 1) % entries.size]
+                        store.setAction(slot.gestureId, next)
+                    }) {
+                        Text(current.displayName)
+                    }
+                }
+            }
+        }
+    }
+}
+
+/**
+ * M10: target-language picker for the "translate focused text"
+ * action. Same cycle-on-tap immediate-persist pattern as
+ * GestureSettingsCard above.
+ */
+@Composable
+private fun TranslateSettingsCard() {
+    val context = LocalContext.current
+    val store = remember { TranslateSettings.getInstance(context) }
+    val target by store.targetLanguage.collectAsState()
+
+    Card(
+        modifier = Modifier.fillMaxWidth(),
+        colors = CardDefaults.cardColors(),
+    ) {
+        Row(
+            modifier = Modifier
+                .fillMaxWidth()
+                .padding(horizontal = 16.dp, vertical = 12.dp),
+            verticalAlignment = Alignment.CenterVertically,
+        ) {
+            Column(modifier = Modifier.weight(1f)) {
+                Text(
+                    text = "Translate to",
+                    style = MaterialTheme.typography.titleSmall,
+                )
+                Text(
+                    text = "Target language for the \"translate focused text\" action.",
+                    style = MaterialTheme.typography.bodySmall,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant,
+                )
+            }
+            Button(onClick = {
+                val options = TranslateSettings.LANGUAGE_OPTIONS
+                val next = options[(options.indexOf(target) + 1) % options.size]
+                store.setTargetLanguage(next)
+            }) {
+                Text(target.displayName)
+            }
+        }
+    }
+}
+
+/**
+ * M9: the accessibility service can't request runtime permissions
+ * itself (only an Activity can), so this card is the one place a user
+ * grants RECORD_AUDIO for voice dictation. Hides itself once granted.
+ */
+@Composable
+private fun MicPermissionCard() {
+    val context = LocalContext.current
+    var granted by remember {
+        mutableStateOf(
+            ContextCompat.checkSelfPermission(context, Manifest.permission.RECORD_AUDIO) ==
+                PackageManager.PERMISSION_GRANTED
+        )
+    }
+    if (granted) return
+
+    val launcher = rememberLauncherForActivityResult(ActivityResultContracts.RequestPermission()) { isGranted ->
+        granted = isGranted
+    }
+
+    Card(
+        modifier = Modifier.fillMaxWidth(),
+        colors = CardDefaults.cardColors(
+            containerColor = MaterialTheme.colorScheme.surfaceVariant
+        ),
+    ) {
+        Column(
+            modifier = Modifier
+                .fillMaxWidth()
+                .padding(16.dp),
+            verticalArrangement = Arrangement.spacedBy(8.dp),
+        ) {
+            Text(
+                text = "Microphone permission needed",
+                style = MaterialTheme.typography.titleMedium,
+            )
+            Text(
+                text = "Voice dictation needs microphone access to hear what you say.",
+                style = MaterialTheme.typography.bodyMedium,
+            )
+            Button(onClick = { launcher.launch(Manifest.permission.RECORD_AUDIO) }) {
+                Text("Grant microphone access")
             }
         }
     }

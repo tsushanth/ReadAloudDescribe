@@ -15,6 +15,12 @@
     <uses-permission android:name="android.permission.POST_NOTIFICATIONS" />
     <uses-permission android:name="android.permission.WAKE_LOCK" />
 
+    <!-- M9: voice dictation capture (system SpeechRecognizer). -->
+    <uses-permission android:name="android.permission.RECORD_AUDIO" />
+    <uses-feature
+        android:name="android.hardware.microphone"
+        android:required="false" />
+
     <!-- For the in-app camera flow (Day 7+) -->
     <uses-feature
         android:name="android.hardware.camera"
@@ -80,6 +86,37 @@
             android:name="androidx.work.impl.foreground.SystemForegroundService"
             android:foregroundServiceType="dataSync"
             tools:node="merge" />
+
+        <!-- M2 skeleton: registers as a toggleable AccessibilityService.
+             Currently inert (logs events only) — see
+             access/DescribeAccessibilityService.kt. -->
+        <service
+            android:name=".access.DescribeAccessibilityService"
+            android:permission="android.permission.BIND_ACCESSIBILITY_SERVICE"
+            android:exported="true"
+            android:label="@string/accessibility_service_label">
+            <intent-filter>
+                <action android:name="android.accessibilityservice.AccessibilityService" />
+            </intent-filter>
+            <meta-data
+                android:name="android.accessibilityservice"
+                android:resource="@xml/accessibility_service_config" />
+        </service>
+
+        <!-- M8: braille keyboard IME. Independent component from the
+             AccessibilityService above — see braille/BrailleImeService.kt. -->
+        <service
+            android:name=".braille.BrailleImeService"
+            android:permission="android.permission.BIND_INPUT_METHOD"
+            android:exported="true"
+            android:label="@string/braille_ime_label">
+            <intent-filter>
+                <action android:name="android.view.InputMethod" />
+            </intent-filter>
+            <meta-data
+                android:name="android.view.im"
+                android:resource="@xml/method" />
+        </service>
 
     </application>
 

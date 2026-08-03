@@ -188,6 +188,27 @@ static std::string compose_chat_prompt(const char* template_c, const char* promp
     return out;
 }
 
+// Text-only sibling of compose_chat_prompt (M9): same wrapping, no
+// mtmd marker since there's no image. Without this wrapping a
+// text-only prompt is out-of-distribution for a model fine-tuned
+// exclusively on the USER/Assistant chat format — greedy decoding on
+// an unwrapped prompt degenerates into repetition loops that never
+// hit EOS (observed: SmolVLM2 produced 120 tokens of "listening to
+// the radio" repeated ~20x on an unwrapped dictation-cleanup prompt).
+static std::string compose_text_chat_prompt(const char* template_c, const char* prompt_c) {
+    std::string out;
+    if (template_c && std::string(template_c) == "vicuna") {
+        out += "USER: ";
+        out += prompt_c;
+        out += "\nASSISTANT:";
+    } else {
+        out += "<|im_start|>User:";
+        out += prompt_c;
+        out += "<end_of_utterance>\nAssistant:";
+    }
+    return out;
+}
+
 extern "C" JNIEXPORT jstring JNICALL
 Java_com_listenai_describe_llama_LlamaEngine_nativeDescribeImage(
     JNIEnv* env, jobject /* this */,
@@ -507,4 +528,137 @@ Java_com_listenai_describe_llama_LlamaEngine_nativeDescribeImageStream(
          (long long)std::chrono::duration_cast<std::chrono::milliseconds>(t_end - t_start).count());
 
     env->CallVoidMethod(callback, midOnComplete, (jint)generated);
+}
+
+// ----------------------------------------------------------------
+// M9: text-only completion, no image/mtmd involved at all. Reuses the
+// already-loaded text model + llama_context from nativeLoadModels —
+// same handle, same weights already resident in memory, just a
+// different (much cheaper) code path: plain llama_tokenize + a
+// one-shot prefill batch instead of mtmd_tokenize/mtmd_helper_eval_chunks.
+// Used by the M9 voice-dictation cleanup pass (raw ASR transcript in,
+// punctuated/de-filler'd text out) — never touches vision embeddings.
+//
+// Blocking. Caller MUST invoke off the main thread.
+// ----------------------------------------------------------------
+extern "C" JNIEXPORT jstring JNICALL
+Java_com_listenai_describe_llama_LlamaEngine_nativeCompleteText(
+    JNIEnv* env, jobject /* this */,
+    jlong handle,
+    jstring promptStr,
+    jint maxTokens,
+    jstring chatTemplateStr
+) {
+    if (handle == 0) {
+        return env->NewStringUTF("(error: engine not loaded)");
+    }
+    auto* ctx = reinterpret_cast<DescribeContext*>(handle);
+
+    const char* prompt_c = env->GetStringUTFChars(promptStr, nullptr);
+    const char* tmpl_c = env->GetStringUTFChars(chatTemplateStr, nullptr);
+    std::string full_prompt = compose_text_chat_prompt(tmpl_c, prompt_c);
+    env->ReleaseStringUTFChars(chatTemplateStr, tmpl_c);
+    int prompt_len = (int)full_prompt.size();
+    LOGI("nativeCompleteText prompt=\"%.60s%s\" maxTokens=%d",
+         prompt_c, strlen(prompt_c) > 60 ? "..." : "", (int)maxTokens);
+
+    auto t_start = std::chrono::steady_clock::now();
+
+    const llama_model * model = llama_get_model(ctx->lctx);
+    const llama_vocab * vocab = llama_model_get_vocab(model);
+
+    // ---- 1. Tokenize the chat-wrapped text (no image, no mtmd) ----
+    int n_tokens_max = prompt_len + 16;  // headroom for BOS/special tokens
+    std::vector<llama_token> prompt_tokens(n_tokens_max);
+    int32_t n_tokens = llama_tokenize(
+        vocab, full_prompt.c_str(), prompt_len,
+        prompt_tokens.data(), n_tokens_max,
+        /* add_special= */ true, /* parse_special= */ true
+    );
+    env->ReleaseStringUTFChars(promptStr, prompt_c);
+    if (n_tokens < 0) {
+        LOGE("nativeCompleteText: llama_tokenize failed rc=%d", n_tokens);
+        return env->NewStringUTF("(error: tokenize failed)");
+    }
+    prompt_tokens.resize(n_tokens);
+
+    // ---- 2. Prefill: reset KV cache, decode the whole prompt in one batch ----
+    llama_memory_clear(llama_get_memory(ctx->lctx), true);
+
+    llama_batch prefill_batch = llama_batch_init((int32_t)n_tokens, 0, 1);
+    for (int i = 0; i < n_tokens; ++i) {
+        prefill_batch.token[i]     = prompt_tokens[i];
+        prefill_batch.pos[i]       = i;
+        prefill_batch.n_seq_id[i]  = 1;
+        prefill_batch.seq_id[i][0] = 0;
+        prefill_batch.logits[i]    = (i == n_tokens - 1) ? 1 : 0;
+    }
+    prefill_batch.n_tokens = n_tokens;
+
+    if (llama_decode(ctx->lctx, prefill_batch) != 0) {
+        llama_batch_free(prefill_batch);
+        LOGE("nativeCompleteText: prefill decode failed");
+        return env->NewStringUTF("(error: prefill decode failed)");
+    }
+    llama_batch_free(prefill_batch);
+    llama_pos n_past = n_tokens;
+
+    auto t_after_prefill = std::chrono::steady_clock::now();
+    LOGI("nativeCompleteText prefill done in %lldms, n_tokens=%d",
+         (long long)std::chrono::duration_cast<std::chrono::milliseconds>(t_after_prefill - t_start).count(),
+         n_tokens);
+
+    // ---- 3. Greedy decode loop (same shape as nativeDescribeImage) ----
+    const llama_token eos = llama_vocab_eos(vocab);
+    llama_batch batch = llama_batch_init(1, 0, 1);
+
+    std::string result;
+    result.reserve(1024);
+    int generated = 0;
+    for (int step = 0; step < (int)maxTokens; ++step) {
+        const float * logits = llama_get_logits_ith(ctx->lctx, -1);
+        if (!logits) {
+            LOGE("nativeCompleteText: null logits at step %d", step);
+            break;
+        }
+        const int32_t n_vocab = llama_vocab_n_tokens(vocab);
+        int best = 0;
+        float best_l = logits[0];
+        for (int i = 1; i < n_vocab; ++i) {
+            if (logits[i] > best_l) { best_l = logits[i]; best = i; }
+        }
+        const llama_token next = (llama_token)best;
+        if (next == eos) {
+            LOGI("nativeCompleteText EOS at step %d", step);
+            break;
+        }
+        generated++;
+
+        char piece[64];
+        int n_chars = llama_token_to_piece(vocab, next, piece, sizeof(piece), 0, false);
+        if (n_chars > 0) {
+            result.append(piece, n_chars);
+        }
+
+        batch.n_tokens      = 1;
+        batch.token[0]      = next;
+        batch.pos[0]        = n_past;
+        batch.n_seq_id[0]   = 1;
+        batch.seq_id[0][0]  = 0;
+        batch.logits[0]     = 1;
+        if (llama_decode(ctx->lctx, batch) != 0) {
+            LOGE("nativeCompleteText: decode failed at step %d", step);
+            break;
+        }
+        n_past += 1;
+    }
+    llama_batch_free(batch);
+
+    auto t_end = std::chrono::steady_clock::now();
+    LOGI("nativeCompleteText done: %d tokens in %lldms total, result_chars=%zu",
+         generated,
+         (long long)std::chrono::duration_cast<std::chrono::milliseconds>(t_end - t_start).count(),
+         result.size());
+
+    return env->NewStringUTF(result.c_str());
 }

@@ -1,0 +1,19 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!--
+    canPerformGestures + canTakeScreenshot are declared now (M2) even
+    though unused until later milestones (gestures: M7, screen-describe:
+    M5) — the permission grant can't be extended later without the user
+    re-enabling the service, so we ask for the full capability set up
+    front.
+-->
+<accessibility-service xmlns:android="http://schemas.android.com/apk/res/android"
+    android:accessibilityEventTypes="typeAllMask"
+    android:accessibilityFeedbackType="feedbackSpoken"
+    android:accessibilityFlags="flagRetrieveInteractiveWindows|flagRequestTouchExplorationMode|flagRequestFilterKeyEvents"
+    android:canRetrieveWindowContent="true"
+    android:canRequestTouchExplorationMode="true"
+    android:canPerformGestures="true"
+    android:canTakeScreenshot="true"
+    android:notificationTimeout="0"
+    android:description="@string/accessibility_service_description"
+    android:settingsActivity="com.listenai.describe.DescribeActivity" />

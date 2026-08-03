@@ -118,4 +118,21 @@ object LlamaEngine {
         chatTemplate: String,
         callback: DescribeCallback,
     )
+
+    /**
+     * M9: text-only completion — no image, no mtmd/vision path at all.
+     * Reuses the already-loaded text model + llama_context from the
+     * same [handle] nativeLoadModels returned; just a plain
+     * tokenize + prefill + greedy-decode loop. Used for cleaning up
+     * raw voice-dictation transcripts (punctuation, filler removal).
+     *
+     * Blocking. MUST be called off the main thread.
+     */
+    external fun nativeCompleteText(
+        handle: Long,
+        prompt: String,
+        maxTokens: Int,
+        /** See nativeDescribeImage docs — "vicuna" or "smolvlm". Required: an unwrapped prompt degenerates into repetition loops. */
+        chatTemplate: String,
+    ): String
 }

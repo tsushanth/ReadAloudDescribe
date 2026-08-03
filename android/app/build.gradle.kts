@@ -22,14 +22,18 @@ android {
         applicationId = "com.listenai.describe"
         minSdk = 26
         targetSdk = 35
-        versionCode = 7
-        versionName = "0.2.2"
+        versionCode = 8
+        versionName = "0.2.3"
 
-        // arm64-v8a only for now — Day-5+ ships native llama.cpp .so files
-        // and we don't intend to support x86 emulators. Matches ReadAloud
-        // Voice's NDK constraint.
+        // M11: added x86_64 alongside arm64-v8a. Unblocks emulator-based
+        // testing (arm64-only meant every native-path check in this repo
+        // had to happen on real hardware) and broader Play Store device
+        // coverage (some Chromebooks/tablets are x86_64). armeabi-v7a
+        // (32-bit) is intentionally still excluded — no test devices to
+        // validate against and 32-bit Android's install base keeps
+        // shrinking.
         ndk {
-            abiFilters += listOf("arm64-v8a")
+            abiFilters += listOf("arm64-v8a", "x86_64")
         }
 
         externalNativeBuild {
@@ -127,6 +131,18 @@ dependencies {
     // downloads. Stream-to-disk so we never load the 868MB+ files into
     // RAM.
     implementation("com.squareup.okhttp3:okhttp:4.12.0")
+
+    // M10 translation: ML Kit's on-device Translation API, not a custom
+    // GGUF model. Translation models (NLLB/M2M100-class) are
+    // encoder-decoder, an architecturally different shape from the
+    // decoder-only causal-LM loop describe_jni.cpp is built around —
+    // doing this in llama.cpp would mean a second from-scratch native
+    // inference engine for a feature that isn't the core differentiator.
+    // ML Kit downloads a language pack once and works fully offline
+    // after, so it doesn't compromise the app's offline/privacy story.
+    implementation("com.google.mlkit:translate:17.0.3")
+    // Bridges ML Kit's Task-based API into suspend functions (Task.await()).
+    implementation("org.jetbrains.kotlinx:kotlinx-coroutines-play-services:1.9.0")
 
     // Debug
     debugImplementation("androidx.compose.ui:ui-tooling")
