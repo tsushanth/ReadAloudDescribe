@@ -94,7 +94,14 @@ enum class ModelKind(
     );
 
     companion object {
-        val DEFAULT = MOONDREAM2
+        // Fresh installs (and resets — see Warren's report of "the old one"
+        // taking ~2 minutes per image after a device reset) previously
+        // defaulted to Moondream2 ("Detailed", ~53s p50, worse on
+        // lower-end hardware). For a screen-reader user waiting on audio
+        // feedback, speed matters more than detail by default — "Fast"
+        // (SmolVLM2, ~8s) is the better first-run experience. Detailed
+        // stays one settings toggle away for anyone who wants it.
+        val DEFAULT = SMOLVLM2_500M
 
         fun fromName(name: String?): ModelKind =
             entries.firstOrNull { it.name == name } ?: DEFAULT
