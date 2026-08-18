@@ -16,14 +16,14 @@ val keystoreProperties = Properties().apply {
 
 android {
     namespace = "com.listenai.describe"
-    compileSdk = 35
+    compileSdk = 36
 
     defaultConfig {
         applicationId = "com.listenai.describe"
         minSdk = 26
-        targetSdk = 35
-        versionCode = 8
-        versionName = "0.2.3"
+        targetSdk = 36
+        versionCode = 10
+        versionName = "0.3.1"
 
         // M11: added x86_64 alongside arm64-v8a. Unblocks emulator-based
         // testing (arm64-only meant every native-path check in this repo
