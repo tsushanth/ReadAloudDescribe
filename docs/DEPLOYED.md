@@ -14,8 +14,9 @@ The app has no production release. It is distributed on testing tracks only.
 ## 0.3.1 (versionCode 10): built, NOT released
 
 - targetSdk / compileSdk 36. Signed release bundle built from `android/` tree
-  `dc6e4799691c87f54a4a8b2b62dfa1bbbb79de56`.
-- Bundle SHA-256: `db4b4704de1985fa75bfde5015b8f3b4c6d96c0f2886698c534d7f4e1acf7bba`
+  `481cd617cc1014375479f7068ff6d2543761192c`.
+- Bundle SHA-256: `bbde384f059fb4b15d27cfc062bdecec16c644c9c6c8f4869820d015718b2ae2`
+- The accessibility service declares `isAccessibilityTool="true"`.
 - Blocked: the Play API rejects every edit to this app, including one with no
   changes, with "Your accessibility permission declaration needs to be updated."
   The declaration has to be updated in Play Console before any upload.
