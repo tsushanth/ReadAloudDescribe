@@ -324,11 +324,14 @@ private fun DescribeScreen(sharedImage: Uri?, nativeInfo: String) {
                     // Diagnostic: dump the full text as hex so we can
                     // see any zero-width / non-breaking / control chars
                     // that might be making TTS phonemizers stutter.
-                    val hex = finalText.map { ch ->
-                        if (ch in ' '..'~') ch.toString()
-                        else "[U+%04X]".format(ch.code)
-                    }.joinToString("")
-                    Log.i("DescribeActivity", "describe text hex-dump: $hex")
+                    // Image content: debug builds only.
+                    if (BuildConfig.DEBUG) {
+                        val hex = finalText.map { ch ->
+                            if (ch in ' '..'~') ch.toString()
+                            else "[U+%04X]".format(ch.code)
+                        }.joinToString("")
+                        Log.i("DescribeActivity", "describe text hex-dump: $hex")
+                    }
                     // Sanitize: collapse weird whitespace + strip control
                     // chars before handing to TTS. Phi-2 byte-BPE
                     // sometimes emits NBSP / zero-width chars that

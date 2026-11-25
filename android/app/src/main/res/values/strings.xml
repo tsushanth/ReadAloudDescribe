@@ -4,8 +4,8 @@
     <string name="share_target_label">Describe with ReadAloud</string>
     <string name="empty_state_share_hint">Share an image to ReadAloud Describe from any app — Photos, Gmail, Chrome — to hear a description.</string>
     <string name="shared_image_content_description">The image you shared</string>
-    <string name="placeholder_describe_pending">(Description goes here — Day 7 wires up llama.cpp inference.)</string>
+    <string name="placeholder_describe_pending">The description will appear here once the model is ready.</string>
     <string name="accessibility_service_label">ReadAloud Describe Screen Reader</string>
-    <string name="accessibility_service_description">Early-development screen reader. Currently inert — it observes screen events for testing but does not yet speak or navigate for you. Do not rely on it in place of TalkBack.</string>
+    <string name="accessibility_service_description">Early-development screen reader for people who are blind or have low vision. While it is on, it reads aloud the item you touch, swiping right or left moves to the next or previous item, and double-tapping activates the selected item. Swiping up takes a screenshot and describes the screen using an AI model that runs on your phone (Android 11 or newer, after the model has downloaded). Descriptions can be wrong. You can change what each swipe does in the app.\n\nTo do this, the service can read what is on your screen in the apps you use, including text. The app does not send screen text or screenshots over the internet. Speech comes from your phone\'s text-to-speech engine, which has its own privacy terms.\n\nMany screen reader features are missing: it does not announce notifications or new screens. Do not rely on it in place of TalkBack, and do not run both at the same time.</string>
     <string name="braille_ime_label">ReadAloud Braille Keyboard</string>
 </resources>

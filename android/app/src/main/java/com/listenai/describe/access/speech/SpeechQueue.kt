@@ -1,6 +1,7 @@
 package com.listenai.describe.access.speech
 
 import android.util.Log
+import com.listenai.describe.BuildConfig
 import com.listenai.describe.tts.DescribeTts
 
 /**
@@ -19,7 +20,8 @@ class SpeechQueue(private val tts: DescribeTts) {
     fun speak(utterance: String) {
         if (utterance == lastSpoken) return
         lastSpoken = utterance
-        Log.d(TAG, "speak: \"$utterance\"")
+        // Screen text: debug builds only.
+        if (BuildConfig.DEBUG) Log.d(TAG, "speak: \"$utterance\"")
         tts.speak(utterance)
     }
 

@@ -87,8 +87,8 @@
             android:foregroundServiceType="dataSync"
             tools:node="merge" />
 
-        <!-- M2 skeleton: registers as a toggleable AccessibilityService.
-             Currently inert (logs events only) — see
+        <!-- The screen reader (explore-by-touch, swipe navigation,
+             describe screen). See
              access/DescribeAccessibilityService.kt. -->
         <service
             android:name=".access.DescribeAccessibilityService"
