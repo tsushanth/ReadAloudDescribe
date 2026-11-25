@@ -1,15 +1,14 @@
 <?xml version="1.0" encoding="utf-8"?>
 <!--
-    canPerformGestures + canTakeScreenshot are declared now (M2) even
-    though unused until later milestones (gestures: M7, screen-describe:
-    M5) — the permission grant can't be extended later without the user
-    re-enabling the service, so we ask for the full capability set up
-    front.
+    This is a screen reader for people who are blind or have low vision,
+    so it declares isAccessibilityTool (read on Android 12+, ignored
+    before). canTakeScreenshot backs the "describe screen" gesture.
 -->
 <accessibility-service xmlns:android="http://schemas.android.com/apk/res/android"
     android:accessibilityEventTypes="typeAllMask"
     android:accessibilityFeedbackType="feedbackSpoken"
     android:accessibilityFlags="flagRetrieveInteractiveWindows|flagRequestTouchExplorationMode|flagRequestFilterKeyEvents"
+    android:isAccessibilityTool="true"
     android:canRetrieveWindowContent="true"
     android:canRequestTouchExplorationMode="true"
     android:canPerformGestures="true"

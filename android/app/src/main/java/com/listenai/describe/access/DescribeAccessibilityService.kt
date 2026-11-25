@@ -240,7 +240,8 @@ class DescribeAccessibilityService : AccessibilityService() {
         if (target != null) {
             currentNode = target
             val utterance = NodeSpeechFormatter.format(target)
-            Log.i(TAG, "moveFocus(next=$next) -> \"$utterance\"")
+            // Screen text: debug builds only.
+            if (BuildConfig.DEBUG) Log.i(TAG, "moveFocus(next=$next) -> \"$utterance\"")
             speechQueue.speak(utterance)
         }
     }

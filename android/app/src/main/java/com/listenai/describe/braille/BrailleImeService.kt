@@ -13,6 +13,7 @@ import android.widget.TextView
 import androidx.core.view.ViewCompat
 import androidx.core.view.WindowInsetsCompat
 import androidx.core.view.doOnAttach
+import com.listenai.describe.BuildConfig
 import com.listenai.describe.tts.DescribeTts
 
 /**
@@ -100,10 +101,11 @@ class BrailleImeService : InputMethodService() {
                 preview.text = pendingWord.toString()
                 currentInputConnection?.commitText(letter.toString(), 1)
                 tts?.speak(letter.toString())
-                Log.d(TAG, "cell dots=$dots -> '$letter'")
+                // Typed input: debug builds only.
+                if (BuildConfig.DEBUG) Log.d(TAG, "cell dots=$dots -> '$letter'")
             } else {
                 tts?.speak("unknown")
-                Log.d(TAG, "cell dots=$dots -> no Grade 1 match")
+                if (BuildConfig.DEBUG) Log.d(TAG, "cell dots=$dots -> no Grade 1 match")
             }
         }
 
