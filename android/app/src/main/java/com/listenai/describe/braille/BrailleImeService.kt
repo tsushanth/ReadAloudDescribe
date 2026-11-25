@@ -10,6 +10,9 @@ import android.view.inputmethod.EditorInfo
 import android.widget.Button
 import android.widget.LinearLayout
 import android.widget.TextView
+import androidx.core.view.ViewCompat
+import androidx.core.view.WindowInsetsCompat
+import androidx.core.view.doOnAttach
 import com.listenai.describe.tts.DescribeTts
 
 /**
@@ -49,6 +52,17 @@ class BrailleImeService : InputMethodService() {
             // close to the bottom to comfortably tap.
             setPadding(0, 0, 0, dpToPx(28))
         }
+        // Apps targeting Android 15+ are edge-to-edge, IME window included,
+        // so the navigation bar can draw over the bottom row. Add its
+        // height on top of the comfort padding (zero where the system
+        // already insets the window).
+        ViewCompat.setOnApplyWindowInsetsListener(root) { view, insets ->
+            val navBottom = insets.getInsets(WindowInsetsCompat.Type.navigationBars()).bottom
+            view.setPadding(0, 0, 0, dpToPx(28) + navBottom)
+            insets
+        }
+        // This view can be attached after the window's first insets pass.
+        root.doOnAttach { ViewCompat.requestApplyInsets(it) }
 
         val preview = TextView(this).apply {
             setTextColor(Color.WHITE)
